@@ -1212,6 +1212,32 @@ func TestParseStartFlags_NoArgs(t *testing.T) {
 	}
 }
 
+func TestParseStartFlags_Stealth(t *testing.T) {
+	flags, err := parseStartFlags([]string{"--stealth"})
+	if err != nil {
+		t.Fatalf("--stealth should be accepted, got error: %v", err)
+	}
+	if !flags.stealth {
+		t.Error("expected stealth=true")
+	}
+	if !flags.headless {
+		t.Error("expected headless=true (default)")
+	}
+}
+
+func TestParseStartFlags_StealthWithShow(t *testing.T) {
+	flags, err := parseStartFlags([]string{"--stealth", "--show"})
+	if err != nil {
+		t.Fatalf("--stealth --show should be accepted, got error: %v", err)
+	}
+	if !flags.stealth {
+		t.Error("expected stealth=true")
+	}
+	if flags.headless {
+		t.Error("expected headless=false with --show")
+	}
+}
+
 func TestParseStartFlags_UnknownFlag(t *testing.T) {
 	_, err := parseStartFlags([]string{"--bogus"})
 	if err == nil {

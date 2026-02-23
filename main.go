@@ -21,6 +21,7 @@ import (
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/launcher"
 	"github.com/go-rod/rod/lib/proto"
+	"github.com/go-rod/stealth"
 )
 
 //go:embed help.txt
@@ -84,6 +85,7 @@ type State struct {
 	DataDir     string `json:"data_dir"`
 	ProxyPID    int    `json:"proxy_pid,omitempty"`  // PID of auth proxy helper
 	ProxyPort   int    `json:"proxy_port,omitempty"` // local port of auth proxy
+	Stealth     bool   `json:"stealth,omitempty"`
 }
 
 func stateDir() string {
@@ -296,6 +298,15 @@ func init() {
 	}
 }
 
+// injectStealth registers stealth evasion JS to run before page scripts on
+// every new document load. Must be called in the same CDP session that will
+// perform the navigation (EvalOnNewDocument is session-scoped).
+func injectStealth(page *rod.Page) {
+	if _, err := page.EvalOnNewDocument(stealth.JS); err != nil {
+		fatal("stealth: failed to inject evasion JS: %v", err)
+	}
+}
+
 // withPage loads state, connects, and returns the active page.
 // Caller should NOT close the browser (we just disconnect).
 func withPage() (*State, *rod.Browser, *rod.Page) {
@@ -313,6 +324,9 @@ func withPage() (*State, *rod.Browser, *rod.Page) {
 	}
 	// Apply default timeout so element queries don't hang forever
 	page = page.Timeout(defaultTimeout)
+	if s.Stealth {
+		injectStealth(page)
+	}
 	return s, browser, page
 }
 
@@ -321,6 +335,7 @@ func withPage() (*State, *rod.Browser, *rod.Page) {
 type startFlags struct {
 	headless         bool
 	ignoreCertErrors bool
+	stealth          bool
 }
 
 // parseStartFlags parses the arguments to "rodney start".
@@ -332,8 +347,10 @@ func parseStartFlags(args []string) (startFlags, error) {
 			f.headless = false
 		case "--insecure", "-k":
 			f.ignoreCertErrors = true
+		case "--stealth":
+			f.stealth = true
 		default:
-			return f, fmt.Errorf("unknown flag: %s\nusage: rodney start [--show] [--insecure | -k]", arg)
+			return f, fmt.Errorf("unknown flag: %s\nusage: rodney start [--show] [--stealth] [--insecure | -k]", arg)
 		}
 	}
 	return f, nil
@@ -428,6 +445,7 @@ func cmdStart(args []string) {
 		DataDir:    dataDir,
 		ProxyPID:   proxyPID,
 		ProxyPort:  proxyPort,
+		Stealth:    flags.stealth,
 	}
 
 	if err := saveState(state); err != nil {
@@ -436,6 +454,9 @@ func cmdStart(args []string) {
 
 	fmt.Printf("Chrome started (PID %d)\n", pid)
 	fmt.Printf("Debug URL: %s\n", debugURL)
+	if flags.stealth {
+		fmt.Println("Stealth mode enabled")
+	}
 }
 
 func cmdConnect(args []string) {
@@ -560,13 +581,25 @@ func cmdOpen(args []string) {
 	pages, _ := browser.Pages()
 	var page *rod.Page
 	if len(pages) == 0 {
-		page = browser.MustPage(url)
+		if s.Stealth {
+			p, err := stealth.Page(browser)
+			if err != nil {
+				fatal("failed to create stealth page: %v", err)
+			}
+			page = p
+			page.MustNavigate(url)
+		} else {
+			page = browser.MustPage(url)
+		}
 		s.ActivePage = 0
 		saveState(s)
 	} else {
 		page, err = getActivePage(browser, s)
 		if err != nil {
 			fatal("%v", err)
+		}
+		if s.Stealth {
+			injectStealth(page)
 		}
 		if err := page.Navigate(url); err != nil {
 			fatal("navigation failed: %v", err)
@@ -1282,11 +1315,23 @@ func cmdNewPage(args []string) {
 	}
 
 	var page *rod.Page
-	if url != "" {
-		page = browser.MustPage(url)
-		page.MustWaitLoad()
+	if s.Stealth {
+		p, err := stealth.Page(browser)
+		if err != nil {
+			fatal("failed to create stealth page: %v", err)
+		}
+		page = p
+		if url != "" {
+			page.MustNavigate(url)
+			page.MustWaitLoad()
+		}
 	} else {
-		page = browser.MustPage("")
+		if url != "" {
+			page = browser.MustPage(url)
+			page.MustWaitLoad()
+		} else {
+			page = browser.MustPage("")
+		}
 	}
 
 	// Switch active to the new page
