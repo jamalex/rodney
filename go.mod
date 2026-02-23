@@ -2,7 +2,10 @@ module github.com/simonw/rodney
 
 go 1.24.7
 
-require github.com/go-rod/rod v0.116.2
+require (
+	github.com/go-rod/rod v0.116.2
+	github.com/go-rod/stealth v0.4.9
+)
 
 require (
 	github.com/ysmood/fetchup v0.2.3 // indirect
