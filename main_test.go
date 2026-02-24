@@ -1791,6 +1791,57 @@ func TestStealthCtx_HTML(t *testing.T) {
 	}
 }
 
+func TestStealthCtx_Text(t *testing.T) {
+	page := navigateTo(t, "/stealth-trap")
+	sc := getStealthCtx(page)
+
+	nodeID, err := sc.element("#target-btn", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element() failed: %v", err)
+	}
+
+	txt, err := sc.text(nodeID)
+	if err != nil {
+		t.Fatalf("text() failed: %v", err)
+	}
+	if txt != "Click Me" {
+		t.Errorf("expected 'Click Me', got %q", txt)
+	}
+
+	// Verify the monkey-patched querySelector counter is still 0,
+	// proving we didn't trigger page JS for the selector.
+	countNodeID, err := sc.element("#qs-count", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element(#qs-count) failed: %v", err)
+	}
+	countResult, err := sc.callOn(countNodeID, "function() { return this.textContent; }")
+	if err != nil {
+		t.Fatalf("callOn(#qs-count) failed: %v", err)
+	}
+	count := countResult.Result.Value.Str()
+	if count != "0" {
+		t.Errorf("monkey-patched querySelector was called %s times, expected 0", count)
+	}
+}
+
+func TestStealthCtx_Visible(t *testing.T) {
+	page := navigateTo(t, "/")
+	sc := getStealthCtx(page)
+
+	nodeID, err := sc.element("#submit-btn", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element() failed: %v", err)
+	}
+
+	vis, err := sc.visible(nodeID)
+	if err != nil {
+		t.Fatalf("visible() failed: %v", err)
+	}
+	if !vis {
+		t.Error("expected #submit-btn to be visible, got false")
+	}
+}
+
 func TestStealthCtx_Focus(t *testing.T) {
 	page := navigateTo(t, "/form")
 	sc := getStealthCtx(page)

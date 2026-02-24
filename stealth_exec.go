@@ -322,6 +322,36 @@ func (sc *stealthCtx) outerHTML(nodeID proto.DOMNodeID) (string, error) {
 	return result.OuterHTML, nil
 }
 
+// text retrieves the innerText of a DOM node by calling a function on it
+// in the isolated world via callOn.
+func (sc *stealthCtx) text(nodeID proto.DOMNodeID) (string, error) {
+	result, err := sc.callOn(nodeID, "function() { return this.innerText; }")
+	if err != nil {
+		return "", err
+	}
+	return result.Result.Value.Str(), nil
+}
+
+// visible checks whether a DOM node is visible by inspecting computed styles
+// and bounding rect in the isolated world via callOn.
+// Returns false if the element has display:none, visibility:hidden, opacity:0,
+// or zero width/height.
+func (sc *stealthCtx) visible(nodeID proto.DOMNodeID) (bool, error) {
+	result, err := sc.callOn(nodeID, `function() {
+		var style = window.getComputedStyle(this);
+		if (style.display === 'none') return false;
+		if (style.visibility === 'hidden') return false;
+		if (style.opacity === '0') return false;
+		var rect = this.getBoundingClientRect();
+		if (rect.width <= 0 || rect.height <= 0) return false;
+		return true;
+	}`)
+	if err != nil {
+		return false, err
+	}
+	return result.Result.Value.Bool(), nil
+}
+
 // focus sets focus on a DOM node.
 // Uses pure CDP DOM.focus — no JavaScript execution.
 func (sc *stealthCtx) focus(nodeID proto.DOMNodeID) error {
