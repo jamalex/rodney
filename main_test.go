@@ -17,6 +17,7 @@ import (
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/launcher"
 	"github.com/go-rod/rod/lib/proto"
+	"github.com/go-rod/stealth"
 	"github.com/ysmood/gson"
 )
 
@@ -1321,26 +1322,22 @@ func handleStealthCheck(w http.ResponseWriter, r *http.Request) {
 // =====================
 
 // launchStealthBrowser creates a browser with stealth config for smoke tests.
-// Uses rod's bundled Chromium (which supports --load-extension) with the
-// worker-fix extension loaded, mirroring what cmdStart --stealth does.
+// Mirrors what cmdStart --stealth does: uses CDP script injection instead of
+// extensions, and uses --headless=new for proper stealth support.
 func launchStealthBrowser(t *testing.T) *rod.Browser {
 	t.Helper()
-
-	dataDir := t.TempDir()
-	extDir := writeStealthExtension(dataDir, workerFixJS)
 
 	l := launcher.New().
 		Set("no-sandbox").
 		Set("disable-gpu").
 		Set("single-process").
-		Headless(true).
 		Leakless(false).
-		Set("disable-blink-features", "AutomationControlled").
-		Set("load-extension", extDir)
-	l.Delete("disable-extensions")
+		Set("disable-blink-features", "AutomationControlled")
+	l.Delete("enable-automation")
+	// Use --headless=new instead of rod's default --headless
+	l.Headless(false)
+	l.Set("headless", "new")
 
-	// Use rod's default Chromium (don't set system Chrome — it may be
-	// Google Chrome which blocks --load-extension)
 	if bin := os.Getenv("ROD_CHROME_BIN"); bin != "" {
 		l = l.Bin(bin)
 	}
@@ -1351,10 +1348,19 @@ func launchStealthBrowser(t *testing.T) *rod.Browser {
 	return browser
 }
 
+// injectStealthScripts injects stealth JS into a page via CDP before navigation.
+func injectStealthScripts(t *testing.T, page *rod.Page) {
+	t.Helper()
+	proto.PageAddScriptToEvaluateOnNewDocument{Source: stealth.JS}.Call(page)
+	proto.PageAddScriptToEvaluateOnNewDocument{Source: workerFixJS}.Call(page)
+}
+
 func TestStealth_NavigatorWebdriverHidden(t *testing.T) {
 	browser := launchStealthBrowser(t)
-	page := browser.MustPage(env.server.URL + "/stealth-check")
+	page := browser.MustPage("")
 	defer page.MustClose()
+	injectStealthScripts(t, page)
+	page.MustNavigate(env.server.URL + "/stealth-check")
 	page.MustWaitLoad()
 
 	webdriver := page.MustEval(`() => String(navigator.webdriver)`).Str()
@@ -1365,8 +1371,10 @@ func TestStealth_NavigatorWebdriverHidden(t *testing.T) {
 
 func TestStealth_UserAgentNormal(t *testing.T) {
 	browser := launchStealthBrowser(t)
-	page := browser.MustPage(env.server.URL + "/stealth-check")
+	page := browser.MustPage("")
 	defer page.MustClose()
+	injectStealthScripts(t, page)
+	page.MustNavigate(env.server.URL + "/stealth-check")
 	page.MustWaitLoad()
 
 	ua := page.MustEval(`() => navigator.userAgent`).Str()
@@ -1377,8 +1385,10 @@ func TestStealth_UserAgentNormal(t *testing.T) {
 
 func TestStealth_WebWorkerConsistency(t *testing.T) {
 	browser := launchStealthBrowser(t)
-	page := browser.MustPage(env.server.URL + "/stealth-check")
+	page := browser.MustPage("")
 	defer page.MustClose()
+	injectStealthScripts(t, page)
+	page.MustNavigate(env.server.URL + "/stealth-check")
 	page.MustWaitLoad()
 
 	// Wait for worker to complete
@@ -1420,8 +1430,11 @@ func TestStealth_BotIncolumitas(t *testing.T) {
 	}
 
 	browser := launchStealthBrowser(t)
-	page := browser.MustPage("https://bot.incolumitas.com/")
+	page := browser.MustPage("")
 	defer page.MustClose()
+	injectStealthScripts(t, page)
+	page.MustNavigate("https://bot.incolumitas.com/")
+	page.MustWaitLoad()
 
 	// The site runs two batches of detection tests asynchronously:
 	// "old tests" in #detection-tests and "new tests" in #new-tests.
@@ -1508,19 +1521,16 @@ func TestStealth_RebrowserBotDetector(t *testing.T) {
 	}
 
 	// Launch stealth browser with non-default viewport to avoid detection
-	dataDir := t.TempDir()
-	extDir := writeStealthExtension(dataDir, workerFixJS)
-
 	l := launcher.New().
 		Set("no-sandbox").
 		Set("disable-gpu").
 		Set("single-process").
-		Headless(true).
 		Leakless(false).
 		Set("disable-blink-features", "AutomationControlled").
-		Set("load-extension", extDir).
 		Set("window-size", "1920,1080")
-	l.Delete("disable-extensions")
+	l.Delete("enable-automation")
+	l.Headless(false)
+	l.Set("headless", "new")
 
 	if bin := os.Getenv("ROD_CHROME_BIN"); bin != "" {
 		l = l.Bin(bin)
@@ -1533,6 +1543,7 @@ func TestStealth_RebrowserBotDetector(t *testing.T) {
 	// Create a page and expose a function BEFORE navigating (tests exposeFunctionLeak)
 	page := browser.MustPage("")
 	defer page.MustClose()
+	injectStealthScripts(t, page)
 	page.MustExpose("exposedFn", func(g gson.JSON) (interface{}, error) {
 		return nil, nil
 	})

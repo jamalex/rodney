@@ -379,91 +379,6 @@ const workerFixJS = `(function() {
 })();
 `
 
-const stealthManifestJSON = `{
-  "manifest_version": 3,
-  "name": "Stealth",
-  "version": "1.0",
-  "content_scripts": [{
-    "matches": ["<all_urls>"],
-    "js": ["stealth.js", "worker-fix.js"],
-    "run_at": "document_start",
-    "world": "MAIN",
-    "all_frames": true
-  }]
-}
-`
-
-// writeStealthExtension writes an MV3 Chrome extension that loads the given JS
-// as a content script in the MAIN world at document_start. Returns the
-// extension directory path.
-func writeStealthExtension(dataDir, js string) string {
-	extDir := filepath.Join(dataDir, "stealth-extension")
-	os.MkdirAll(extDir, 0755)
-	os.WriteFile(filepath.Join(extDir, "stealth.js"), []byte(js), 0644)
-	os.WriteFile(filepath.Join(extDir, "worker-fix.js"), []byte(workerFixJS), 0644)
-	os.WriteFile(filepath.Join(extDir, "manifest.json"), []byte(stealthManifestJSON), 0644)
-	return extDir
-}
-
-// ensureStealthExtension downloads (or updates) the full stealth JS from
-// upstream and writes the Chrome extension into <dataDir>/stealth-extension/.
-// The extension is loaded at browser startup and applies to all page loads.
-func ensureStealthExtension(dataDir string) string {
-	extDir := filepath.Join(dataDir, "stealth-extension")
-	os.MkdirAll(extDir, 0755)
-
-	jsPath := filepath.Join(extDir, "stealth.js")
-	etagPath := filepath.Join(extDir, ".etag")
-
-	const upstreamURL = "https://raw.githubusercontent.com/nicktate/puppeteer-extra-stealth-js/main/stealth.min.js"
-
-	cached := false
-	if _, err := os.Stat(jsPath); err == nil {
-		cached = true
-	}
-
-	// Try to download / update from upstream
-	downloaded := false
-	client := &http.Client{Timeout: 3 * time.Second}
-
-	req, err := http.NewRequest("GET", upstreamURL, nil)
-	if err == nil {
-		if cached {
-			if etag, err := os.ReadFile(etagPath); err == nil && len(etag) > 0 {
-				req.Header.Set("If-None-Match", string(etag))
-			}
-		}
-		resp, err := client.Do(req)
-		if err == nil {
-			defer resp.Body.Close()
-			if resp.StatusCode == http.StatusOK {
-				body, err := io.ReadAll(resp.Body)
-				if err == nil && len(body) > 0 {
-					os.WriteFile(jsPath, body, 0644)
-					if etag := resp.Header.Get("ETag"); etag != "" {
-						os.WriteFile(etagPath, []byte(etag), 0644)
-					}
-					downloaded = true
-					fmt.Println("Stealth JS: updated from upstream")
-				}
-			} else if resp.StatusCode == http.StatusNotModified {
-				fmt.Println("Stealth JS: using cached version")
-			}
-		} else if cached {
-			fmt.Println("Stealth JS: using cached version")
-		}
-	}
-
-	// Fallback: if nothing on disk yet and download failed, use embedded JS
-	if !cached && !downloaded {
-		os.WriteFile(jsPath, []byte(stealth.JS), 0644)
-		fmt.Println("Stealth JS: using embedded fallback")
-	}
-
-	os.WriteFile(filepath.Join(extDir, "worker-fix.js"), []byte(workerFixJS), 0644)
-	os.WriteFile(filepath.Join(extDir, "manifest.json"), []byte(stealthManifestJSON), 0644)
-	return extDir
-}
 
 // withPage loads state, connects, and returns the active page.
 // Caller should NOT close the browser (we just disconnect).
@@ -568,6 +483,18 @@ func cmdStart(args []string) {
 		l = l.Bin(bin)
 	}
 
+	// In stealth mode, prefer a system-installed Chrome over rod's bundled
+	// Chromium. Mainline Chrome has navigator.userAgentData and other
+	// features that make it harder to fingerprint as automation.
+	if flags.stealth && os.Getenv("ROD_CHROME_BIN") == "" {
+		for _, name := range []string{"google-chrome", "google-chrome-stable", "chromium-browser", "chromium"} {
+			if path, err := exec.LookPath(name); err == nil {
+				l = l.Bin(path)
+				break
+			}
+		}
+	}
+
 	// Detect authenticated proxy and launch helper if needed
 	var proxyPID, proxyPort int
 	if server, user, pass, needed := detectProxy(); needed {
@@ -607,9 +534,16 @@ func cmdStart(args []string) {
 
 	if flags.stealth {
 		l.Set("disable-blink-features", "AutomationControlled")
-		extDir := ensureStealthExtension(dataDir)
-		l.Set("load-extension", extDir)
-		l.Delete("disable-extensions")
+		l.Delete("enable-automation")
+
+		// Use --headless=new instead of rod's default --headless when in
+		// stealth mode. The new headless mode properly supports
+		// addScriptToEvaluateOnNewDocument and doesn't add "HeadlessChrome"
+		// to the user agent string.
+		if headless {
+			l.Headless(false)       // remove rod's default --headless flag
+			l.Set("headless", "new") // use new headless mode
+		}
 	}
 
 	debugURL := l.MustLaunch()
@@ -645,12 +579,16 @@ func cmdStart(args []string) {
 	}
 
 	if flags.stealth {
-
 		browser, err := connectBrowser(state)
 		if err == nil {
 			pages, err := browser.Pages()
 			if err == nil {
 				for _, p := range pages {
+					// Inject stealth scripts via CDP before any navigation occurs.
+					// addScriptToEvaluateOnNewDocument persists across navigations.
+					proto.PageAddScriptToEvaluateOnNewDocument{Source: stealth.JS}.Call(p)
+					proto.PageAddScriptToEvaluateOnNewDocument{Source: workerFixJS}.Call(p)
+
 					proto.EmulationSetDeviceMetricsOverride{
 						Width:             vpWidth,
 						Height:            vpHeight,
