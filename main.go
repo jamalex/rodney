@@ -298,13 +298,169 @@ func init() {
 	}
 }
 
-// injectStealth registers stealth evasion JS to run before page scripts on
-// every new document load. Must be called in the same CDP session that will
-// perform the navigation (EvalOnNewDocument is session-scoped).
-func injectStealth(page *rod.Page) {
-	if _, err := page.EvalOnNewDocument(stealth.JS); err != nil {
-		fatal("stealth: failed to inject evasion JS: %v", err)
+// findSystemChrome looks for an installed Chrome/Chromium binary on the system.
+// Returns the path if found, empty string otherwise.
+
+// workerFixJS is a content script that makes navigator.webdriver consistent
+// between the main thread and Web Workers.
+// --disable-blink-features=AutomationControlled sets the main thread to false
+// but removes the property entirely from workers (undefined). Bot-detection
+// sites compare navigator properties between contexts to detect automation.
+//
+// This script intercepts:
+// 1. URL.createObjectURL — patches blob-URL workers
+// 2. Worker constructor — patches URL-based workers (via sync XHR fetch + blob rewrite)
+const workerFixJS = `(function() {
+  'use strict';
+  // Build a patch that syncs navigator properties from main thread into workers.
+  // --disable-blink-features=AutomationControlled makes main thread webdriver=false
+  // but workers may differ in webdriver, language, languages, and vendor.
+  var props = {
+    webdriver: {get: function() { return false }, configurable: true},
+  };
+  // Sync language/languages/vendor so workers match the main thread exactly
+  if (typeof navigator.language === 'string') {
+    var lang = navigator.language;
+    props.language = {get: function() { return lang }, configurable: true};
+  }
+  if (navigator.languages) {
+    var langs = Array.prototype.slice.call(navigator.languages);
+    props.languages = {get: function() { return langs }, configurable: true};
+  }
+  if (typeof navigator.vendor === 'string') {
+    var vendor = navigator.vendor;
+    props.vendor = {get: function() { return vendor }, configurable: true};
+  }
+  // Serialize the patch as self-contained JS for injection into workers
+  var patch = 'try{';
+  patch += 'var p=' + JSON.stringify({
+    webdriver: false,
+    language: navigator.language,
+    languages: navigator.languages ? Array.prototype.slice.call(navigator.languages) : undefined,
+    vendor: navigator.vendor || undefined,
+  }) + ';';
+  patch += 'Object.keys(p).forEach(function(k){';
+  patch += 'if(p[k]!==undefined)Object.defineProperty(navigator,k,{get:function(){return p[k]},configurable:true});';
+  patch += '});';
+  patch += '}catch(e){}\n';
+
+  // 1. Intercept blob URL creation to patch blob workers
+  var origCreateObjectURL = URL.createObjectURL;
+  URL.createObjectURL = function(obj) {
+    if (obj instanceof Blob && (obj.type === '' || /javascript/i.test(obj.type))) {
+      obj = new Blob([patch, obj], {type: obj.type || 'application/javascript'});
+    }
+    return origCreateObjectURL(obj);
+  };
+
+  // 2. Intercept Worker constructor to patch URL-based workers
+  var OrigWorker = Worker;
+  Worker = function(url, opts) {
+    if (typeof url === 'string' && !url.startsWith('blob:') && !url.startsWith('data:')) {
+      try {
+        if (opts && opts.type === 'module') {
+          return new OrigWorker(url, opts);
+        }
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', url, false);
+        xhr.send();
+        if (xhr.status === 200) {
+          var blob = new Blob([patch + xhr.responseText], {type: 'application/javascript'});
+          url = origCreateObjectURL(blob);
+        }
+      } catch(e) {}
+    }
+    return new OrigWorker(url, opts);
+  };
+  Worker.prototype = OrigWorker.prototype;
+  Object.keys(OrigWorker).forEach(function(k) { try { Worker[k] = OrigWorker[k]; } catch(e) {} });
+})();
+`
+
+const stealthManifestJSON = `{
+  "manifest_version": 3,
+  "name": "Stealth",
+  "version": "1.0",
+  "content_scripts": [{
+    "matches": ["<all_urls>"],
+    "js": ["stealth.js", "worker-fix.js"],
+    "run_at": "document_start",
+    "world": "MAIN",
+    "all_frames": true
+  }]
+}
+`
+
+// writeStealthExtension writes an MV3 Chrome extension that loads the given JS
+// as a content script in the MAIN world at document_start. Returns the
+// extension directory path.
+func writeStealthExtension(dataDir, js string) string {
+	extDir := filepath.Join(dataDir, "stealth-extension")
+	os.MkdirAll(extDir, 0755)
+	os.WriteFile(filepath.Join(extDir, "stealth.js"), []byte(js), 0644)
+	os.WriteFile(filepath.Join(extDir, "worker-fix.js"), []byte(workerFixJS), 0644)
+	os.WriteFile(filepath.Join(extDir, "manifest.json"), []byte(stealthManifestJSON), 0644)
+	return extDir
+}
+
+// ensureStealthExtension downloads (or updates) the full stealth JS from
+// upstream and writes the Chrome extension into <dataDir>/stealth-extension/.
+// The extension is loaded at browser startup and applies to all page loads.
+func ensureStealthExtension(dataDir string) string {
+	extDir := filepath.Join(dataDir, "stealth-extension")
+	os.MkdirAll(extDir, 0755)
+
+	jsPath := filepath.Join(extDir, "stealth.js")
+	etagPath := filepath.Join(extDir, ".etag")
+
+	const upstreamURL = "https://raw.githubusercontent.com/nicktate/puppeteer-extra-stealth-js/main/stealth.min.js"
+
+	cached := false
+	if _, err := os.Stat(jsPath); err == nil {
+		cached = true
 	}
+
+	// Try to download / update from upstream
+	downloaded := false
+	client := &http.Client{Timeout: 3 * time.Second}
+
+	req, err := http.NewRequest("GET", upstreamURL, nil)
+	if err == nil {
+		if cached {
+			if etag, err := os.ReadFile(etagPath); err == nil && len(etag) > 0 {
+				req.Header.Set("If-None-Match", string(etag))
+			}
+		}
+		resp, err := client.Do(req)
+		if err == nil {
+			defer resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				body, err := io.ReadAll(resp.Body)
+				if err == nil && len(body) > 0 {
+					os.WriteFile(jsPath, body, 0644)
+					if etag := resp.Header.Get("ETag"); etag != "" {
+						os.WriteFile(etagPath, []byte(etag), 0644)
+					}
+					downloaded = true
+					fmt.Println("Stealth JS: updated from upstream")
+				}
+			} else if resp.StatusCode == http.StatusNotModified {
+				fmt.Println("Stealth JS: using cached version")
+			}
+		} else if cached {
+			fmt.Println("Stealth JS: using cached version")
+		}
+	}
+
+	// Fallback: if nothing on disk yet and download failed, use embedded JS
+	if !cached && !downloaded {
+		os.WriteFile(jsPath, []byte(stealth.JS), 0644)
+		fmt.Println("Stealth JS: using embedded fallback")
+	}
+
+	os.WriteFile(filepath.Join(extDir, "worker-fix.js"), []byte(workerFixJS), 0644)
+	os.WriteFile(filepath.Join(extDir, "manifest.json"), []byte(stealthManifestJSON), 0644)
+	return extDir
 }
 
 // withPage loads state, connects, and returns the active page.
@@ -324,9 +480,6 @@ func withPage() (*State, *rod.Browser, *rod.Page) {
 	}
 	// Apply default timeout so element queries don't hang forever
 	page = page.Timeout(defaultTimeout)
-	if s.Stealth {
-		injectStealth(page)
-	}
 	return s, browser, page
 }
 
@@ -336,21 +489,38 @@ type startFlags struct {
 	headless         bool
 	ignoreCertErrors bool
 	stealth          bool
+	viewport         string
 }
 
 // parseStartFlags parses the arguments to "rodney start".
 func parseStartFlags(args []string) (startFlags, error) {
 	f := startFlags{headless: true}
-	for _, arg := range args {
-		switch arg {
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
 		case "--show":
 			f.headless = false
 		case "--insecure", "-k":
 			f.ignoreCertErrors = true
 		case "--stealth":
 			f.stealth = true
+		case "--viewport":
+			i++
+			if i >= len(args) {
+				return f, fmt.Errorf("missing value for --viewport\nusage: rodney start [--show] [--stealth] [--viewport WxH] [--insecure | -k]")
+			}
+			parts := strings.SplitN(args[i], "x", 2)
+			if len(parts) != 2 {
+				return f, fmt.Errorf("invalid viewport format %q: expected WxH (e.g. 1920x935)", args[i])
+			}
+			if _, err := strconv.Atoi(parts[0]); err != nil {
+				return f, fmt.Errorf("invalid viewport width %q: %v", parts[0], err)
+			}
+			if _, err := strconv.Atoi(parts[1]); err != nil {
+				return f, fmt.Errorf("invalid viewport height %q: %v", parts[1], err)
+			}
+			f.viewport = args[i]
 		default:
-			return f, fmt.Errorf("unknown flag: %s\nusage: rodney start [--show] [--stealth] [--insecure | -k]", arg)
+			return f, fmt.Errorf("unknown flag: %s\nusage: rodney start [--show] [--stealth] [--viewport WxH] [--insecure | -k]", args[i])
 		}
 	}
 	return f, nil
@@ -433,6 +603,13 @@ func cmdStart(args []string) {
 		l.Set("ignore-certificate-errors")
 	}
 
+	if flags.stealth {
+		l.Set("disable-blink-features", "AutomationControlled")
+		extDir := ensureStealthExtension(dataDir)
+		l.Set("load-extension", extDir)
+		l.Delete("disable-extensions")
+	}
+
 	debugURL := l.MustLaunch()
 
 	// Get Chrome PID from the launcher
@@ -450,6 +627,30 @@ func cmdStart(args []string) {
 
 	if err := saveState(state); err != nil {
 		fatal("failed to save state: %v", err)
+	}
+
+	if flags.stealth {
+		vp := flags.viewport
+		if vp == "" {
+			vp = "1920x935"
+		}
+		parts := strings.SplitN(vp, "x", 2)
+		vpWidth, _ := strconv.Atoi(parts[0])
+		vpHeight, _ := strconv.Atoi(parts[1])
+
+		browser, err := connectBrowser(state)
+		if err == nil {
+			pages, err := browser.Pages()
+			if err == nil {
+				for _, p := range pages {
+					proto.EmulationSetDeviceMetricsOverride{
+						Width:             vpWidth,
+						Height:            vpHeight,
+						DeviceScaleFactor: 1,
+					}.Call(p)
+				}
+			}
+		}
 	}
 
 	fmt.Printf("Chrome started (PID %d)\n", pid)
@@ -581,25 +782,13 @@ func cmdOpen(args []string) {
 	pages, _ := browser.Pages()
 	var page *rod.Page
 	if len(pages) == 0 {
-		if s.Stealth {
-			p, err := stealth.Page(browser)
-			if err != nil {
-				fatal("failed to create stealth page: %v", err)
-			}
-			page = p
-			page.MustNavigate(url)
-		} else {
-			page = browser.MustPage(url)
-		}
+		page = browser.MustPage(url)
 		s.ActivePage = 0
 		saveState(s)
 	} else {
 		page, err = getActivePage(browser, s)
 		if err != nil {
 			fatal("%v", err)
-		}
-		if s.Stealth {
-			injectStealth(page)
 		}
 		if err := page.Navigate(url); err != nil {
 			fatal("navigation failed: %v", err)
@@ -1315,23 +1504,11 @@ func cmdNewPage(args []string) {
 	}
 
 	var page *rod.Page
-	if s.Stealth {
-		p, err := stealth.Page(browser)
-		if err != nil {
-			fatal("failed to create stealth page: %v", err)
-		}
-		page = p
-		if url != "" {
-			page.MustNavigate(url)
-			page.MustWaitLoad()
-		}
+	if url != "" {
+		page = browser.MustPage(url)
+		page.MustWaitLoad()
 	} else {
-		if url != "" {
-			page = browser.MustPage(url)
-			page.MustWaitLoad()
-		} else {
-			page = browser.MustPage("")
-		}
+		page = browser.MustPage("")
 	}
 
 	// Switch active to the new page

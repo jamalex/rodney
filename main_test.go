@@ -1251,6 +1251,33 @@ func TestParseStartFlags_UnknownFlag(t *testing.T) {
 	}
 }
 
+func TestParseStartFlags_Viewport(t *testing.T) {
+	flags, err := parseStartFlags([]string{"--stealth", "--viewport", "1366x768"})
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if flags.viewport != "1366x768" {
+		t.Errorf("expected viewport='1366x768', got %q", flags.viewport)
+	}
+}
+
+func TestParseStartFlags_StealthDefaultViewport(t *testing.T) {
+	flags, err := parseStartFlags([]string{"--stealth"})
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if flags.viewport != "" {
+		t.Errorf("expected viewport='' (default applied at start time), got %q", flags.viewport)
+	}
+}
+
+func TestParseStartFlags_ViewportBadFormat(t *testing.T) {
+	_, err := parseStartFlags([]string{"--viewport", "invalid"})
+	if err == nil {
+		t.Fatal("expected error for bad viewport format, got nil")
+	}
+}
+
 // =====================
 // Stealth check fixture
 // =====================
