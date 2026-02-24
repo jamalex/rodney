@@ -1541,23 +1541,29 @@ func TestStealth_RebrowserBotDetector(t *testing.T) {
 	page.MustNavigate("https://bot-detector.rebrowser.net/")
 	page.MustWaitLoad()
 
-	// Trigger the grey-bubble tests that need explicit actions:
+	// Trigger the grey-bubble tests that need explicit actions.
+	// Use isolated world eval (sc.eval) so mainWorldExecution passes.
+	sc := getStealthCtx(page)
 	// 1. dummyFn: call the page's window.dummyFn()
-	page.MustEval(`() => { if (typeof window.dummyFn === 'function') window.dummyFn() }`)
+	sc.eval(`(function() { if (typeof window.dummyFn === 'function') window.dummyFn() })()`)
 	// 2. sourceUrlLeak: call getElementById (the page monkey-patches it to check the stack)
-	page.MustEval(`() => document.getElementById('detections-json')`)
+	sc.eval(`document.getElementById('detections-json')`)
 	// 3. mainWorldExecution: call getElementsByClassName (grey = good = isolated world)
 	//    We intentionally trigger this so it evaluates rather than staying grey.
-	page.MustEval(`() => document.getElementsByClassName('div')`)
+	sc.eval(`document.getElementsByClassName('div')`)
 
 	// Wait for async tests to settle (runtimeEnableLeak, bypassCsp, useragent poll)
 	time.Sleep(3 * time.Second)
 
 	// Read the detections JSON from the textarea
-	resultsJSON := page.Timeout(30 * time.Second).MustEval(`() => {
-		const el = document.getElementById('detections-json');
+	result, err := sc.eval(`(function() {
+		var el = document.getElementById('detections-json');
 		return el ? el.value : '[]';
-	}`).Str()
+	})()`)
+	if err != nil {
+		t.Fatalf("failed to read detections: %v", err)
+	}
+	resultsJSON := result.Result.Value.Str()
 
 	var detections []struct {
 		Type   string      `json:"type"`
@@ -1577,19 +1583,6 @@ func TestStealth_RebrowserBotDetector(t *testing.T) {
 	//
 	// Known unfixable detections:
 	//
-	// mainWorldExecution: rod evaluates ALL JavaScript in the main world
-	// (the same context as the page's own scripts). It has no isolated
-	// world support. This means any page can monkey-patch DOM APIs like
-	// document.querySelector, querySelectorAll, getElementById, etc. and
-	// detect when our automation calls them. In practice this affects:
-	//   - All selector-based commands (click, text, input, wait, etc.)
-	//     because rod's page.Element() uses querySelector internally
-	//   - Any page.Eval()/MustEval() calls that touch the DOM
-	// Pure CDP operations (screenshot, navigation, accessibility tree)
-	// are NOT affected since they don't execute JavaScript.
-	// Fixing this would require rod to add isolated world support or
-	// using rebrowser-patches to the Chromium binary.
-	//
 	// runtimeEnableLeak: rod must send CDP Runtime.enable to evaluate JS.
 	// The page detects this by using console.debug() with a trapped error
 	// stack getter — when Runtime.enable is active, Chrome reads the stack
@@ -1599,9 +1592,8 @@ func TestStealth_RebrowserBotDetector(t *testing.T) {
 	// useragent: rod's bundled Chromium doesn't expose
 	// navigator.userAgentData, so the test can't determine the version.
 	skip := map[string]bool{
-		"mainWorldExecution": true,
-		"runtimeEnableLeak":  true,
-		"useragent":          true,
+		"runtimeEnableLeak": true,
+		"useragent":         true,
 	}
 
 	for _, d := range detections {
