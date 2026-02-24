@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1543,7 +1544,13 @@ func TestStealth_RebrowserBotDetector(t *testing.T) {
 	// Create a page and expose a function BEFORE navigating (tests exposeFunctionLeak)
 	page := browser.MustPage("")
 	defer page.MustClose()
-	injectStealthScripts(t, page)
+
+	// Apply full stealth setup: scripts + viewport + userAgentData brands
+	applyStealthToPage(page, browser, &State{
+		ViewportWidth:  1920,
+		ViewportHeight: 1080,
+	})
+
 	page.MustExpose("exposedFn", func(g gson.JSON) (interface{}, error) {
 		return nil, nil
 	})
@@ -1590,21 +1597,31 @@ func TestStealth_RebrowserBotDetector(t *testing.T) {
 		t.Fatal("no detections returned from bot-detector.rebrowser.net")
 	}
 
+	// Determine Chrome major version to decide whether runtimeEnableLeak
+	// should be expected to pass. Chrome 145+ includes the V8 fix.
+	chromeMajor := 0
+	versionResult, verr := (proto.BrowserGetVersion{}).Call(browser)
+	if verr == nil {
+		if strings.HasPrefix(versionResult.Product, "Chrome/") {
+			fullVer := strings.TrimPrefix(versionResult.Product, "Chrome/")
+			if dotIdx := strings.Index(fullVer, "."); dotIdx > 0 {
+				if v, err := strconv.Atoi(fullVer[:dotIdx]); err == nil {
+					chromeMajor = v
+				}
+			}
+		}
+	}
+
 	// rating < 0 = green/pass, 0 = grey/untested, 0.5 = yellow/warning, > 0 = red/fail
 	//
 	// Known unfixable detections:
 	//
 	// runtimeEnableLeak: rod must send CDP Runtime.enable to evaluate JS.
-	// The page detects this by using console.debug() with a trapped error
-	// stack getter — when Runtime.enable is active, Chrome reads the stack
-	// to send Runtime.consoleAPICalled events. Unfixable without patching
-	// the Chromium binary (rebrowser-patches).
-	//
-	// useragent: rod's bundled Chromium doesn't expose
-	// navigator.userAgentData, so the test can't determine the version.
-	skip := map[string]bool{
-		"runtimeEnableLeak": true,
-		"useragent":         true,
+	// Chrome 145+ has a V8 fix that makes this undetectable. For older
+	// versions we still skip it.
+	skip := map[string]bool{}
+	if chromeMajor < 145 {
+		skip["runtimeEnableLeak"] = true
 	}
 
 	for _, d := range detections {
@@ -2122,5 +2139,62 @@ func TestStealthIntegration_ClickWithoutDetection(t *testing.T) {
 	count := result.Result.Value.Str()
 	if count != "0" {
 		t.Errorf("detection triggered: querySelector called %s times", count)
+	}
+}
+
+func TestStealth_UserAgentDataBrands(t *testing.T) {
+	browser := launchStealthBrowser(t)
+	page := browser.MustPage("")
+	defer page.MustClose()
+
+	// Apply full stealth setup including userAgentData brands
+	applyStealthToPage(page, browser, &State{
+		ViewportWidth:  1920,
+		ViewportHeight: 935,
+	})
+
+	page.MustNavigate(env.server.URL + "/stealth-check")
+	page.MustWaitLoad()
+
+	// Check that navigator.userAgentData.brands contains "Google Chrome"
+	hasChrome := page.MustEval(`() => {
+		if (!navigator.userAgentData || !navigator.userAgentData.brands) return false;
+		return navigator.userAgentData.brands.some(b => b.brand === "Google Chrome");
+	}`).Bool()
+
+	if !hasChrome {
+		brands := page.MustEval(`() => JSON.stringify(navigator.userAgentData ? navigator.userAgentData.brands : null)`).Str()
+		t.Errorf("expected navigator.userAgentData.brands to contain 'Google Chrome', got: %s", brands)
+	}
+}
+
+func TestStealth_ScriptPersistsAcrossNavigation(t *testing.T) {
+	browser := launchStealthBrowser(t)
+	page := browser.MustPage("")
+	defer page.MustClose()
+
+	// Inject stealth scripts (uses addScriptToEvaluateOnNewDocument which persists)
+	injectStealthScripts(t, page)
+
+	// Navigate to stealth-check and verify webdriver is not true
+	page.MustNavigate(env.server.URL + "/stealth-check")
+	page.MustWaitLoad()
+
+	webdriver1 := page.MustEval(`() => String(navigator.webdriver)`).Str()
+	if webdriver1 == "true" {
+		t.Error("navigator.webdriver should not be true after first navigation")
+	}
+
+	// Navigate to the index page (different page)
+	page.MustNavigate(env.server.URL + "/")
+	page.MustWaitLoad()
+
+	// Navigate back to stealth-check and verify scripts still active
+	page.MustNavigate(env.server.URL + "/stealth-check")
+	page.MustWaitLoad()
+
+	webdriver2 := page.MustEval(`() => String(navigator.webdriver)`).Str()
+	if webdriver2 == "true" {
+		t.Error("navigator.webdriver should not be true after navigating away and back")
 	}
 }
