@@ -1842,6 +1842,83 @@ func TestStealthCtx_Visible(t *testing.T) {
 	}
 }
 
+func TestStealthCtx_BezierPath(t *testing.T) {
+	path := bezierPath(0, 0, 500, 300, 20)
+	if len(path) < 10 {
+		t.Fatalf("expected >= 10 points, got %d", len(path))
+	}
+	// First point must be the start
+	if path[0][0] != 0 || path[0][1] != 0 {
+		t.Errorf("first point should be (0,0), got (%f,%f)", path[0][0], path[0][1])
+	}
+	// Last point must be the end
+	last := path[len(path)-1]
+	if last[0] != 500 || last[1] != 300 {
+		t.Errorf("last point should be (500,300), got (%f,%f)", last[0], last[1])
+	}
+}
+
+func TestStealthCtx_EaseInOut(t *testing.T) {
+	if v := easeInOutCubic(0); v != 0 {
+		t.Errorf("easeInOutCubic(0) = %f, want 0", v)
+	}
+	if v := easeInOutCubic(1); v != 1 {
+		t.Errorf("easeInOutCubic(1) = %f, want 1", v)
+	}
+	mid := easeInOutCubic(0.5)
+	if mid < 0.45 || mid > 0.55 {
+		t.Errorf("easeInOutCubic(0.5) = %f, want ~0.5", mid)
+	}
+	// Ease-in: values near 0 should be smaller than linear
+	if v := easeInOutCubic(0.1); v >= 0.1 {
+		t.Errorf("easeInOutCubic(0.1) = %f, expected < 0.1 (ease-in)", v)
+	}
+}
+
+func TestStealthCtx_Click(t *testing.T) {
+	page := navigateTo(t, "/stealth-trap")
+	sc := getStealthCtx(page)
+
+	nodeID, err := sc.element("#target-btn", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element failed: %v", err)
+	}
+	err = sc.click(nodeID)
+	if err != nil {
+		t.Fatalf("click failed: %v", err)
+	}
+
+	// Verify the monkey-patched querySelector was never called.
+	// Read the count via CDP to avoid triggering the monkey patch ourselves.
+	countNodeID, err := sc.element("#qs-count", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element(#qs-count) failed: %v", err)
+	}
+	countResult, err := sc.callOn(countNodeID, "function() { return this.textContent; }")
+	if err != nil {
+		t.Fatalf("callOn(#qs-count) failed: %v", err)
+	}
+	count := countResult.Result.Value.Str()
+	if count != "0" {
+		t.Errorf("monkey-patched querySelector was called %s times during click, expected 0", count)
+	}
+}
+
+func TestStealthCtx_Hover(t *testing.T) {
+	page := navigateTo(t, "/")
+	sc := getStealthCtx(page)
+
+	nodeID, err := sc.element("#submit-btn", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element failed: %v", err)
+	}
+	err = sc.hover(nodeID)
+	if err != nil {
+		t.Fatalf("hover failed: %v", err)
+	}
+	// No assertion on effect -- hover primarily needs to not error.
+}
+
 func TestStealthCtx_Focus(t *testing.T) {
 	page := navigateTo(t, "/form")
 	sc := getStealthCtx(page)
