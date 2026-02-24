@@ -1352,8 +1352,12 @@ func launchStealthBrowser(t *testing.T) *rod.Browser {
 // injectStealthScripts injects stealth JS into a page via CDP before navigation.
 func injectStealthScripts(t *testing.T, page *rod.Page) {
 	t.Helper()
-	proto.PageAddScriptToEvaluateOnNewDocument{Source: stealth.JS}.Call(page)
-	proto.PageAddScriptToEvaluateOnNewDocument{Source: workerFixJS}.Call(page)
+	if _, err := (proto.PageAddScriptToEvaluateOnNewDocument{Source: stealth.JS}).Call(page); err != nil {
+		t.Fatalf("failed to inject stealth JS: %v", err)
+	}
+	if _, err := (proto.PageAddScriptToEvaluateOnNewDocument{Source: workerFixJS}).Call(page); err != nil {
+		t.Fatalf("failed to inject workerFix JS: %v", err)
+	}
 }
 
 func TestStealth_NavigatorWebdriverHidden(t *testing.T) {
@@ -1601,7 +1605,9 @@ func TestStealth_RebrowserBotDetector(t *testing.T) {
 	// should be expected to pass. Chrome 145+ includes the V8 fix.
 	chromeMajor := 0
 	versionResult, verr := (proto.BrowserGetVersion{}).Call(browser)
-	if verr == nil {
+	if verr != nil {
+		t.Logf("BrowserGetVersion failed (%v), treating chromeMajor=0 (will skip runtimeEnableLeak)", verr)
+	} else {
 		if strings.HasPrefix(versionResult.Product, "Chrome/") {
 			fullVer := strings.TrimPrefix(versionResult.Product, "Chrome/")
 			if dotIdx := strings.Index(fullVer, "."); dotIdx > 0 {
