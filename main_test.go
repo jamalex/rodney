@@ -1970,6 +1970,81 @@ func TestStealthCtx_ClearInput(t *testing.T) {
 	}
 }
 
+func TestStealthCtx_Select(t *testing.T) {
+	page := navigateTo(t, "/form")
+	sc := getStealthCtx(page)
+
+	nodeID, err := sc.element("#topic", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element failed: %v", err)
+	}
+	err = sc.selectOption(nodeID, "support")
+	if err != nil {
+		t.Fatalf("selectOption failed: %v", err)
+	}
+
+	// Verify value was set
+	result, err := sc.callOn(nodeID, `function() { return this.value; }`)
+	if err != nil {
+		t.Fatalf("callOn failed: %v", err)
+	}
+	if result.Result.Value.Str() != "support" {
+		t.Errorf("expected 'support', got %q", result.Result.Value.Str())
+	}
+}
+
+func TestStealthCtx_Submit(t *testing.T) {
+	page := navigateTo(t, "/form")
+	sc := getStealthCtx(page)
+
+	nodeID, err := sc.element("form", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element failed: %v", err)
+	}
+	err = sc.submit(nodeID)
+	if err != nil {
+		t.Fatalf("submit failed: %v", err)
+	}
+}
+
+func TestStealthCtx_Download(t *testing.T) {
+	page := navigateTo(t, "/download")
+	sc := getStealthCtx(page)
+
+	nodeID, err := sc.element("#file-link", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element failed: %v", err)
+	}
+	data, err := sc.download(nodeID)
+	if err != nil {
+		t.Fatalf("download failed: %v", err)
+	}
+	if string(data) != "Hello World" {
+		t.Errorf("expected 'Hello World', got %q", string(data))
+	}
+}
+
+func TestStealthCtx_ScreenshotEl(t *testing.T) {
+	page := navigateTo(t, "/")
+	sc := getStealthCtx(page)
+
+	nodeID, err := sc.element("#submit-btn", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element failed: %v", err)
+	}
+	data, err := sc.screenshotElement(nodeID)
+	if err != nil {
+		t.Fatalf("screenshotElement failed: %v", err)
+	}
+	if len(data) < 100 {
+		t.Errorf("expected >= 100 bytes, got %d", len(data))
+	}
+	// Check PNG magic bytes
+	if len(data) < 2 || data[0] != 0x89 || data[1] != 0x50 {
+		t.Errorf("expected PNG magic bytes (0x89, 0x50), got (0x%02x, 0x%02x)", data[0], data[1])
+	}
+}
+
 func TestStealthCtx_Focus(t *testing.T) {
 	page := navigateTo(t, "/form")
 	sc := getStealthCtx(page)

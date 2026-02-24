@@ -1,10 +1,12 @@
 package main
 
 import (
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"math"
 	"math/rand"
+	"strings"
 	"sync"
 	"time"
 
@@ -618,4 +620,94 @@ func (sc *stealthCtx) hover(nodeID proto.DOMNodeID) error {
 		return err
 	}
 	return sc.moveMouse(x, y)
+}
+
+// selectOption sets the value of a <select> element and dispatches a change event.
+// Uses callOn to execute in the isolated world.
+func (sc *stealthCtx) selectOption(nodeID proto.DOMNodeID, value string) error {
+	_, err := sc.callOn(nodeID, fmt.Sprintf(`function() {
+		this.value = %q;
+		this.dispatchEvent(new Event('change', {bubbles: true}));
+	}`, value))
+	return err
+}
+
+// submit calls submit() on a <form> element via the isolated world.
+func (sc *stealthCtx) submit(nodeID proto.DOMNodeID) error {
+	_, err := sc.callOn(nodeID, "function() { this.submit(); }")
+	return err
+}
+
+// download fetches the resource referenced by a node's href or src attribute.
+// For data: URLs, decodes inline. For HTTP URLs, fetches via the isolated world.
+func (sc *stealthCtx) download(nodeID proto.DOMNodeID) ([]byte, error) {
+	// Try href first, then src
+	urlStr, err := sc.attr(nodeID, "href")
+	if err != nil {
+		urlStr, err = sc.attr(nodeID, "src")
+		if err != nil {
+			return nil, fmt.Errorf("element has no href or src attribute")
+		}
+	}
+
+	if strings.HasPrefix(urlStr, "data:") {
+		return decodeDataURL(urlStr)
+	}
+
+	// Fetch via isolated world eval with async fetch
+	result, err := sc.eval(fmt.Sprintf(`(async () => {
+		const resp = await fetch(%q);
+		if (!resp.ok) throw new Error('HTTP ' + resp.status);
+		const buf = await resp.arrayBuffer();
+		const bytes = new Uint8Array(buf);
+		let binary = '';
+		for (let i = 0; i < bytes.length; i++) {
+			binary += String.fromCharCode(bytes[i]);
+		}
+		return btoa(binary);
+	})()`, urlStr))
+	if err != nil {
+		return nil, fmt.Errorf("fetch failed: %w", err)
+	}
+
+	return base64.StdEncoding.DecodeString(result.Result.Value.Str())
+}
+
+// screenshotElement captures a PNG screenshot of a single DOM element.
+// Uses the border quad from DOM.getBoxModel to compute the clip region.
+func (sc *stealthCtx) screenshotElement(nodeID proto.DOMNodeID) ([]byte, error) {
+	box, err := proto.DOMGetBoxModel{NodeID: nodeID}.Call(sc.page)
+	if err != nil {
+		return nil, fmt.Errorf("DOM.getBoxModel failed: %w", err)
+	}
+
+	// Use the border quad (not content) for the screenshot clip
+	q := box.Model.Border
+	if len(q) < 8 {
+		return nil, fmt.Errorf("invalid border quad: got %d values", len(q))
+	}
+
+	// Compute bounding rect from the quad's 4 corners
+	minX := math.Min(math.Min(q[0], q[2]), math.Min(q[4], q[6]))
+	maxX := math.Max(math.Max(q[0], q[2]), math.Max(q[4], q[6]))
+	minY := math.Min(math.Min(q[1], q[3]), math.Min(q[5], q[7]))
+	maxY := math.Max(math.Max(q[1], q[3]), math.Max(q[5], q[7]))
+
+	format := proto.PageCaptureScreenshotFormatPng
+	result, err := proto.PageCaptureScreenshot{
+		Format: format,
+		Clip: &proto.PageViewport{
+			X:      minX,
+			Y:      minY,
+			Width:  maxX - minX,
+			Height: maxY - minY,
+			Scale:  1,
+		},
+	}.Call(sc.page)
+	if err != nil {
+		return nil, fmt.Errorf("Page.captureScreenshot failed: %w", err)
+	}
+
+	// result.Data is already decoded from base64 by the JSON unmarshaler
+	return result.Data, nil
 }
