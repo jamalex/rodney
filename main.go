@@ -870,7 +870,28 @@ func cmdTitle(args []string) {
 }
 
 func cmdHTML(args []string) {
-	_, _, page := withPage()
+	s, _, page := withPage()
+	if s.Stealth {
+		sc := getStealthCtx(page)
+		if len(args) > 0 {
+			nodeID, err := sc.element(args[0], defaultTimeout)
+			if err != nil {
+				fatal("element not found: %v", err)
+			}
+			html, err := sc.outerHTML(nodeID)
+			if err != nil {
+				fatal("failed to get HTML: %v", err)
+			}
+			fmt.Println(html)
+		} else {
+			result, err := sc.eval("document.documentElement.outerHTML")
+			if err != nil {
+				fatal("failed to get HTML: %v", err)
+			}
+			fmt.Println(result.Result.Value.Str())
+		}
+		return
+	}
 	if len(args) > 0 {
 		el, err := page.Element(args[0])
 		if err != nil {
@@ -891,7 +912,20 @@ func cmdText(args []string) {
 	if len(args) < 1 {
 		fatal("usage: rodney text <selector>")
 	}
-	_, _, page := withPage()
+	s, _, page := withPage()
+	if s.Stealth {
+		sc := getStealthCtx(page)
+		nodeID, err := sc.element(args[0], defaultTimeout)
+		if err != nil {
+			fatal("element not found: %v", err)
+		}
+		text, err := sc.text(nodeID)
+		if err != nil {
+			fatal("failed to get text: %v", err)
+		}
+		fmt.Println(text)
+		return
+	}
 	el, err := page.Element(args[0])
 	if err != nil {
 		fatal("element not found: %v", err)
@@ -907,7 +941,20 @@ func cmdAttr(args []string) {
 	if len(args) < 2 {
 		fatal("usage: rodney attr <selector> <attribute>")
 	}
-	_, _, page := withPage()
+	s, _, page := withPage()
+	if s.Stealth {
+		sc := getStealthCtx(page)
+		nodeID, err := sc.element(args[0], defaultTimeout)
+		if err != nil {
+			fatal("element not found: %v", err)
+		}
+		val, err := sc.attr(nodeID, args[1])
+		if err != nil {
+			fatal("attribute %q not found", args[1])
+		}
+		fmt.Println(val)
+		return
+	}
 	el, err := page.Element(args[0])
 	if err != nil {
 		fatal("element not found: %v", err)
@@ -952,7 +999,30 @@ func cmdJS(args []string) {
 		fatal("usage: rodney js <expression>")
 	}
 	expr := strings.Join(args, " ")
-	_, _, page := withPage()
+	s, _, page := withPage()
+
+	if s.Stealth {
+		sc := getStealthCtx(page)
+		result, err := sc.eval(expr)
+		if err != nil {
+			fatal("JS error: %v", err)
+		}
+		v := result.Result.Value
+		raw := v.JSON("", "")
+		switch {
+		case raw == "null" || raw == "undefined":
+			fmt.Println(raw)
+		case raw == "true" || raw == "false":
+			fmt.Println(raw)
+		case len(raw) > 0 && raw[0] == '"':
+			fmt.Println(v.Str())
+		case len(raw) > 0 && (raw[0] == '{' || raw[0] == '['):
+			fmt.Println(v.JSON("", "  "))
+		default:
+			fmt.Println(raw)
+		}
+		return
+	}
 
 	// Wrap bare expressions in a function
 	js := fmt.Sprintf(`() => { return (%s); }`, expr)
@@ -985,7 +1055,20 @@ func cmdClick(args []string) {
 	if len(args) < 1 {
 		fatal("usage: rodney click <selector>")
 	}
-	_, _, page := withPage()
+	s, _, page := withPage()
+	if s.Stealth {
+		sc := getStealthCtx(page)
+		nodeID, err := sc.element(args[0], defaultTimeout)
+		if err != nil {
+			fatal("element not found: %v", err)
+		}
+		if err := sc.click(nodeID); err != nil {
+			fatal("click failed: %v", err)
+		}
+		time.Sleep(100 * time.Millisecond)
+		fmt.Println("Clicked")
+		return
+	}
 	el, err := page.Element(args[0])
 	if err != nil {
 		fatal("element not found: %v", err)
@@ -1002,12 +1085,24 @@ func cmdInput(args []string) {
 	if len(args) < 2 {
 		fatal("usage: rodney input <selector> <text>")
 	}
-	_, _, page := withPage()
+	s, _, page := withPage()
+	text := strings.Join(args[1:], " ")
+	if s.Stealth {
+		sc := getStealthCtx(page)
+		nodeID, err := sc.element(args[0], defaultTimeout)
+		if err != nil {
+			fatal("element not found: %v", err)
+		}
+		if err := sc.input(nodeID, text); err != nil {
+			fatal("input failed: %v", err)
+		}
+		fmt.Printf("Typed: %s\n", text)
+		return
+	}
 	el, err := page.Element(args[0])
 	if err != nil {
 		fatal("element not found: %v", err)
 	}
-	text := strings.Join(args[1:], " ")
 	el.MustSelectAllText().MustInput(text)
 	fmt.Printf("Typed: %s\n", text)
 }
@@ -1016,7 +1111,19 @@ func cmdClear(args []string) {
 	if len(args) < 1 {
 		fatal("usage: rodney clear <selector>")
 	}
-	_, _, page := withPage()
+	s, _, page := withPage()
+	if s.Stealth {
+		sc := getStealthCtx(page)
+		nodeID, err := sc.element(args[0], defaultTimeout)
+		if err != nil {
+			fatal("element not found: %v", err)
+		}
+		if err := sc.clearInput(nodeID); err != nil {
+			fatal("clear failed: %v", err)
+		}
+		fmt.Println("Cleared")
+		return
+	}
 	el, err := page.Element(args[0])
 	if err != nil {
 		fatal("element not found: %v", err)
@@ -1076,7 +1183,44 @@ func cmdDownload(args []string) {
 		outFile = args[1]
 	}
 
-	_, _, page := withPage()
+	s, _, page := withPage()
+
+	if s.Stealth {
+		sc := getStealthCtx(page)
+		nodeID, err := sc.element(selector, defaultTimeout)
+		if err != nil {
+			fatal("element not found: %v", err)
+		}
+		data, err := sc.download(nodeID)
+		if err != nil {
+			fatal("download failed: %v", err)
+		}
+
+		if outFile == "-" {
+			os.Stdout.Write(data)
+			return
+		}
+
+		// Infer filename from the element's href or src attribute
+		if outFile == "" {
+			urlStr, err := sc.attr(nodeID, "href")
+			if err != nil {
+				urlStr, _ = sc.attr(nodeID, "src")
+			}
+			if urlStr != "" {
+				outFile = inferDownloadFilename(urlStr)
+			} else {
+				outFile = nextAvailableFile("download", "")
+			}
+		}
+
+		if err := os.WriteFile(outFile, data, 0644); err != nil {
+			fatal("failed to write file: %v", err)
+		}
+		fmt.Printf("Saved %s (%d bytes)\n", outFile, len(data))
+		return
+	}
+
 	el, err := page.Element(selector)
 	if err != nil {
 		fatal("element not found: %v", err)
@@ -1222,7 +1366,19 @@ func cmdSelect(args []string) {
 	if len(args) < 2 {
 		fatal("usage: rodney select <selector> <value>")
 	}
-	_, _, page := withPage()
+	s, _, page := withPage()
+	if s.Stealth {
+		sc := getStealthCtx(page)
+		nodeID, err := sc.element(args[0], defaultTimeout)
+		if err != nil {
+			fatal("element not found: %v", err)
+		}
+		if err := sc.selectOption(nodeID, args[1]); err != nil {
+			fatal("select failed: %v", err)
+		}
+		fmt.Printf("Selected: %s\n", args[1])
+		return
+	}
 	// Use JavaScript to set the value, as rod's Select matches by text
 	js := fmt.Sprintf(`() => {
 		const el = document.querySelector(%q);
@@ -1242,7 +1398,19 @@ func cmdSubmit(args []string) {
 	if len(args) < 1 {
 		fatal("usage: rodney submit <selector>")
 	}
-	_, _, page := withPage()
+	s, _, page := withPage()
+	if s.Stealth {
+		sc := getStealthCtx(page)
+		nodeID, err := sc.element(args[0], defaultTimeout)
+		if err != nil {
+			fatal("form not found: %v", err)
+		}
+		if err := sc.submit(nodeID); err != nil {
+			fatal("submit failed: %v", err)
+		}
+		fmt.Println("Submitted")
+		return
+	}
 	_, err := page.Element(args[0])
 	if err != nil {
 		fatal("form not found: %v", err)
@@ -1255,7 +1423,19 @@ func cmdHover(args []string) {
 	if len(args) < 1 {
 		fatal("usage: rodney hover <selector>")
 	}
-	_, _, page := withPage()
+	s, _, page := withPage()
+	if s.Stealth {
+		sc := getStealthCtx(page)
+		nodeID, err := sc.element(args[0], defaultTimeout)
+		if err != nil {
+			fatal("element not found: %v", err)
+		}
+		if err := sc.hover(nodeID); err != nil {
+			fatal("hover failed: %v", err)
+		}
+		fmt.Println("Hovered")
+		return
+	}
 	el, err := page.Element(args[0])
 	if err != nil {
 		fatal("element not found: %v", err)
@@ -1268,7 +1448,19 @@ func cmdFocus(args []string) {
 	if len(args) < 1 {
 		fatal("usage: rodney focus <selector>")
 	}
-	_, _, page := withPage()
+	s, _, page := withPage()
+	if s.Stealth {
+		sc := getStealthCtx(page)
+		nodeID, err := sc.element(args[0], defaultTimeout)
+		if err != nil {
+			fatal("element not found: %v", err)
+		}
+		if err := sc.focus(nodeID); err != nil {
+			fatal("focus failed: %v", err)
+		}
+		fmt.Println("Focused")
+		return
+	}
 	el, err := page.Element(args[0])
 	if err != nil {
 		fatal("element not found: %v", err)
@@ -1281,7 +1473,28 @@ func cmdWait(args []string) {
 	if len(args) < 1 {
 		fatal("usage: rodney wait <selector>")
 	}
-	_, _, page := withPage()
+	s, _, page := withPage()
+	if s.Stealth {
+		sc := getStealthCtx(page)
+		nodeID, err := sc.element(args[0], defaultTimeout)
+		if err != nil {
+			fatal("element not found: %v", err)
+		}
+		// Poll visible until true or timeout
+		deadline := time.Now().Add(defaultTimeout)
+		for {
+			vis, err := sc.visible(nodeID)
+			if err == nil && vis {
+				break
+			}
+			if time.Now().After(deadline) {
+				fatal("element %q not visible within %v", args[0], defaultTimeout)
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		fmt.Println("Element visible")
+		return
+	}
 	el, err := page.Element(args[0])
 	if err != nil {
 		fatal("element not found: %v", err)
@@ -1410,7 +1623,23 @@ func cmdScreenshotEl(args []string) {
 	if len(args) > 1 {
 		file = args[1]
 	}
-	_, _, page := withPage()
+	s, _, page := withPage()
+	if s.Stealth {
+		sc := getStealthCtx(page)
+		nodeID, err := sc.element(args[0], defaultTimeout)
+		if err != nil {
+			fatal("element not found: %v", err)
+		}
+		data, err := sc.screenshotElement(nodeID)
+		if err != nil {
+			fatal("screenshot failed: %v", err)
+		}
+		if err := os.WriteFile(file, data, 0644); err != nil {
+			fatal("failed to write screenshot: %v", err)
+		}
+		fmt.Printf("Saved %s (%d bytes)\n", file, len(data))
+		return
+	}
 	el, err := page.Element(args[0])
 	if err != nil {
 		fatal("element not found: %v", err)
@@ -1572,7 +1801,22 @@ func cmdExists(args []string) {
 	if len(args) < 1 {
 		fatal("usage: rodney exists <selector>")
 	}
-	_, _, page := withPage()
+	s, _, page := withPage()
+	if s.Stealth {
+		sc := getStealthCtx(page)
+		found, err := sc.exists(args[0])
+		if err != nil {
+			fatal("query failed: %v", err)
+		}
+		if found {
+			fmt.Println("true")
+			os.Exit(0)
+		} else {
+			fmt.Println("false")
+			os.Exit(1)
+		}
+		return
+	}
 	has, _, err := page.Has(args[0])
 	if err != nil {
 		fatal("query failed: %v", err)
@@ -1590,7 +1834,16 @@ func cmdCount(args []string) {
 	if len(args) < 1 {
 		fatal("usage: rodney count <selector>")
 	}
-	_, _, page := withPage()
+	s, _, page := withPage()
+	if s.Stealth {
+		sc := getStealthCtx(page)
+		n, err := sc.count(args[0])
+		if err != nil {
+			fatal("query failed: %v", err)
+		}
+		fmt.Println(n)
+		return
+	}
 	els, err := page.Elements(args[0])
 	if err != nil {
 		fatal("query failed: %v", err)
@@ -1602,7 +1855,25 @@ func cmdVisible(args []string) {
 	if len(args) < 1 {
 		fatal("usage: rodney visible <selector>")
 	}
-	_, _, page := withPage()
+	s, _, page := withPage()
+	if s.Stealth {
+		sc := getStealthCtx(page)
+		nodeID, err := sc.element(args[0], defaultTimeout)
+		if err != nil {
+			fmt.Println("false")
+			os.Exit(1)
+			return
+		}
+		vis, err := sc.visible(nodeID)
+		if err != nil || !vis {
+			fmt.Println("false")
+			os.Exit(1)
+			return
+		}
+		fmt.Println("true")
+		os.Exit(0)
+		return
+	}
 	el, err := page.Element(args[0])
 	if err != nil {
 		fmt.Println("false")
@@ -1674,29 +1945,50 @@ func cmdAssert(args []string) {
 		fatal("usage: rodney assert <js-expression> [expected] [--message msg]")
 	}
 
-	_, _, page := withPage()
+	s, _, page := withPage()
 
-	js := fmt.Sprintf(`() => { return (%s); }`, expr)
-	result, err := page.Eval(js)
-	if err != nil {
-		fatal("JS error: %v", err)
-	}
+	var raw, actual string
 
-	// Format the result value as a string, matching the js command's output
-	v := result.Value
-	raw := v.JSON("", "")
-	var actual string
-	switch {
-	case raw == "null" || raw == "undefined":
-		actual = raw
-	case raw == "true" || raw == "false":
-		actual = raw
-	case len(raw) > 0 && raw[0] == '"':
-		actual = v.Str()
-	case len(raw) > 0 && (raw[0] == '{' || raw[0] == '['):
-		actual = v.JSON("", "  ")
-	default:
-		actual = raw
+	if s.Stealth {
+		sc := getStealthCtx(page)
+		result, err := sc.eval(expr)
+		if err != nil {
+			fatal("JS error: %v", err)
+		}
+		v := result.Result.Value
+		raw = v.JSON("", "")
+		switch {
+		case raw == "null" || raw == "undefined":
+			actual = raw
+		case raw == "true" || raw == "false":
+			actual = raw
+		case len(raw) > 0 && raw[0] == '"':
+			actual = v.Str()
+		case len(raw) > 0 && (raw[0] == '{' || raw[0] == '['):
+			actual = v.JSON("", "  ")
+		default:
+			actual = raw
+		}
+	} else {
+		js := fmt.Sprintf(`() => { return (%s); }`, expr)
+		result, err := page.Eval(js)
+		if err != nil {
+			fatal("JS error: %v", err)
+		}
+		v := result.Value
+		raw = v.JSON("", "")
+		switch {
+		case raw == "null" || raw == "undefined":
+			actual = raw
+		case raw == "true" || raw == "false":
+			actual = raw
+		case len(raw) > 0 && raw[0] == '"':
+			actual = v.Str()
+		case len(raw) > 0 && (raw[0] == '{' || raw[0] == '['):
+			actual = v.JSON("", "  ")
+		default:
+			actual = raw
+		}
 	}
 
 	if expected != nil {

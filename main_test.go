@@ -2095,3 +2095,29 @@ func TestStealthCtx_Focus(t *testing.T) {
 		t.Errorf("expected activeElement.id='name-input', got %q", activeID)
 	}
 }
+
+// =====================
+// Stealth integration tests
+// =====================
+
+func TestStealthIntegration_ClickWithoutDetection(t *testing.T) {
+	page := navigateTo(t, "/stealth-trap")
+	sc := getStealthCtx(page)
+
+	nodeID, err := sc.element("#target-btn", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element failed: %v", err)
+	}
+	err = sc.click(nodeID)
+	if err != nil {
+		t.Fatalf("click failed: %v", err)
+	}
+
+	// Verify no detection
+	countNodeID, _ := sc.element("#qs-count", defaultTimeout)
+	result, _ := sc.callOn(countNodeID, `function() { return this.textContent; }`)
+	count := result.Result.Value.Str()
+	if count != "0" {
+		t.Errorf("detection triggered: querySelector called %s times", count)
+	}
+}
