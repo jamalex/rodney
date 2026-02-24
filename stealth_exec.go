@@ -29,24 +29,29 @@ type stealthCtx struct {
 // stealthCtxMap caches stealthCtx instances keyed by page TargetID.
 var stealthCtxMap sync.Map
 
-// newStealthCtx creates a new stealthCtx for the given page with sensible defaults.
-func newStealthCtx(page *rod.Page) *stealthCtx {
+// newStealthCtx creates a new stealthCtx for the given page.
+// Viewport defaults to 1920x935 unless overridden.
+func newStealthCtx(page *rod.Page, vpWidth, vpHeight int) *stealthCtx {
+	if vpWidth <= 0 || vpHeight <= 0 {
+		vpWidth, vpHeight = 1920, 935
+	}
 	return &stealthCtx{
 		page:     page,
 		ctxID:    0,
-		cursorX:  640,
-		cursorY:  320,
-		viewport: [2]int{1920, 935},
+		cursorX:  float64(vpWidth) * 0.33,
+		cursorY:  float64(vpHeight) * 0.34,
+		viewport: [2]int{vpWidth, vpHeight},
 	}
 }
 
 // getStealthCtx returns the cached stealthCtx for a page, creating one if needed.
-func getStealthCtx(page *rod.Page) *stealthCtx {
+// The State's viewport dimensions are used for new contexts.
+func getStealthCtx(page *rod.Page, s *State) *stealthCtx {
 	key := page.TargetID
 	if v, ok := stealthCtxMap.Load(key); ok {
 		return v.(*stealthCtx)
 	}
-	sc := newStealthCtx(page)
+	sc := newStealthCtx(page, s.ViewportWidth, s.ViewportHeight)
 	actual, _ := stealthCtxMap.LoadOrStore(key, sc)
 	return actual.(*stealthCtx)
 }
@@ -481,7 +486,23 @@ func bezierPath(x0, y0, x1, y1 float64, numSteps int) [][2]float64 {
 	return points
 }
 
-// getBoxModelCenter returns the center coordinates of a DOM node's content box.
+// scrollOffset returns the current page scroll position (scrollX, scrollY) via the isolated world.
+func (sc *stealthCtx) scrollOffset() (float64, float64, error) {
+	result, err := sc.eval("[window.scrollX, window.scrollY]")
+	if err != nil {
+		return 0, 0, fmt.Errorf("failed to get scroll offset: %w", err)
+	}
+	arr, ok := result.Result.Value.Raw().([]interface{})
+	if !ok || len(arr) < 2 {
+		return 0, 0, nil
+	}
+	sx, _ := arr[0].(float64)
+	sy, _ := arr[1].(float64)
+	return sx, sy, nil
+}
+
+// getBoxModelCenter returns the viewport-relative center coordinates of a DOM node's content box.
+// DOM.getBoxModel returns document-relative coordinates, so we subtract the current scroll offset.
 func (sc *stealthCtx) getBoxModelCenter(nodeID proto.DOMNodeID) (float64, float64, error) {
 	result, err := proto.DOMGetBoxModel{NodeID: nodeID}.Call(sc.page)
 	if err != nil {
@@ -491,9 +512,14 @@ func (sc *stealthCtx) getBoxModelCenter(nodeID proto.DOMNodeID) (float64, float6
 	if len(q) < 8 {
 		return 0, 0, fmt.Errorf("invalid content quad: got %d values", len(q))
 	}
-	x := (q[0] + q[2] + q[4] + q[6]) / 4
-	y := (q[1] + q[3] + q[5] + q[7]) / 4
-	return x, y, nil
+	docX := (q[0] + q[2] + q[4] + q[6]) / 4
+	docY := (q[1] + q[3] + q[5] + q[7]) / 4
+
+	scrollX, scrollY, err := sc.scrollOffset()
+	if err != nil {
+		return 0, 0, err
+	}
+	return docX - scrollX, docY - scrollY, nil
 }
 
 // moveMouse simulates human-like mouse movement from current cursor to (x, y).
@@ -540,13 +566,20 @@ func (sc *stealthCtx) scrollIntoView(nodeID proto.DOMNodeID) error {
 	if len(q) < 8 {
 		return nil
 	}
-	elY := (q[1] + q[3] + q[5] + q[7]) / 4
+	// DOM.getBoxModel returns document-relative coordinates
+	docY := (q[1] + q[3] + q[5] + q[7]) / 4
+	_, scrollY, err := sc.scrollOffset()
+	if err != nil {
+		return err
+	}
+	// Convert to viewport-relative
+	viewY := docY - scrollY
 	vpH := float64(sc.viewport[1])
 
 	// If element center is outside viewport, scroll
-	if elY < 0 || elY > vpH {
-		target := elY - vpH/2 // center the element
-		remaining := target
+	if viewY < 0 || viewY > vpH {
+		// Scroll so element is centered: need to scroll by (viewY - vpH/2)
+		remaining := viewY - vpH/2
 		for math.Abs(remaining) > 10 {
 			step := remaining * 0.3 // ease toward target
 			if math.Abs(step) < 20 {
@@ -594,8 +627,8 @@ func (sc *stealthCtx) click(nodeID proto.DOMNodeID) error {
 	if err != nil {
 		return fmt.Errorf("mouse press failed: %w", err)
 	}
-	// Brief natural delay between press and release
-	time.Sleep(time.Duration(50+rand.Intn(30)) * time.Millisecond)
+	// Brief natural delay between press and release (50-200ms, matching real human clicks)
+	time.Sleep(time.Duration(50+rand.Intn(150)) * time.Millisecond)
 	// Release
 	err = proto.InputDispatchMouseEvent{
 		Type:       proto.InputDispatchMouseEventTypeMouseReleased,

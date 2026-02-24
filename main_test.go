@@ -1543,7 +1543,7 @@ func TestStealth_RebrowserBotDetector(t *testing.T) {
 
 	// Trigger the grey-bubble tests that need explicit actions.
 	// Use isolated world eval (sc.eval) so mainWorldExecution passes.
-	sc := getStealthCtx(page)
+	sc := getStealthCtx(page, &State{})
 	// 1. dummyFn: call the page's window.dummyFn()
 	sc.eval(`(function() { if (typeof window.dummyFn === 'function') window.dummyFn() })()`)
 	// 2. sourceUrlLeak: call getElementById (the page monkey-patches it to check the stack)
@@ -1675,7 +1675,7 @@ func handleStealthTrap(w http.ResponseWriter, r *http.Request) {
 
 func TestStealthCtx_ElementFindsWithoutTriggeringMonkeyPatch(t *testing.T) {
 	page := navigateTo(t, "/stealth-trap")
-	sc := getStealthCtx(page)
+	sc := getStealthCtx(page, &State{})
 
 	nodeID, err := sc.element("#target-btn", defaultTimeout)
 	if err != nil {
@@ -1703,7 +1703,7 @@ func TestStealthCtx_ElementFindsWithoutTriggeringMonkeyPatch(t *testing.T) {
 
 func TestStealthCtx_ElementsFindsAll(t *testing.T) {
 	page := navigateTo(t, "/")
-	sc := getStealthCtx(page)
+	sc := getStealthCtx(page, &State{})
 
 	nodeIDs, err := sc.elements("button", defaultTimeout)
 	if err != nil {
@@ -1716,7 +1716,7 @@ func TestStealthCtx_ElementsFindsAll(t *testing.T) {
 
 func TestStealthCtx_ElementTimesOut(t *testing.T) {
 	page := navigateTo(t, "/")
-	sc := getStealthCtx(page)
+	sc := getStealthCtx(page, &State{})
 
 	_, err := sc.element("#nonexistent", 200*time.Millisecond)
 	if err == nil {
@@ -1726,7 +1726,7 @@ func TestStealthCtx_ElementTimesOut(t *testing.T) {
 
 func TestStealthCtx_IsolatedWorldEval(t *testing.T) {
 	page := navigateTo(t, "/")
-	sc := getStealthCtx(page)
+	sc := getStealthCtx(page, &State{})
 
 	result, err := sc.eval("document.title")
 	if err != nil {
@@ -1740,7 +1740,7 @@ func TestStealthCtx_IsolatedWorldEval(t *testing.T) {
 
 func TestStealthCtx_Exists(t *testing.T) {
 	page := navigateTo(t, "/")
-	sc := getStealthCtx(page)
+	sc := getStealthCtx(page, &State{})
 
 	// #submit-btn should exist
 	found, err := sc.exists("#submit-btn")
@@ -1763,7 +1763,7 @@ func TestStealthCtx_Exists(t *testing.T) {
 
 func TestStealthCtx_Count(t *testing.T) {
 	page := navigateTo(t, "/")
-	sc := getStealthCtx(page)
+	sc := getStealthCtx(page, &State{})
 
 	n, err := sc.count("button")
 	if err != nil {
@@ -1776,7 +1776,7 @@ func TestStealthCtx_Count(t *testing.T) {
 
 func TestStealthCtx_Attr(t *testing.T) {
 	page := navigateTo(t, "/")
-	sc := getStealthCtx(page)
+	sc := getStealthCtx(page, &State{})
 
 	nodeID, err := sc.element("#cancel-btn", defaultTimeout)
 	if err != nil {
@@ -1794,7 +1794,7 @@ func TestStealthCtx_Attr(t *testing.T) {
 
 func TestStealthCtx_HTML(t *testing.T) {
 	page := navigateTo(t, "/")
-	sc := getStealthCtx(page)
+	sc := getStealthCtx(page, &State{})
 
 	nodeID, err := sc.element("#submit-btn", defaultTimeout)
 	if err != nil {
@@ -1812,7 +1812,7 @@ func TestStealthCtx_HTML(t *testing.T) {
 
 func TestStealthCtx_Text(t *testing.T) {
 	page := navigateTo(t, "/stealth-trap")
-	sc := getStealthCtx(page)
+	sc := getStealthCtx(page, &State{})
 
 	nodeID, err := sc.element("#target-btn", defaultTimeout)
 	if err != nil {
@@ -1845,7 +1845,7 @@ func TestStealthCtx_Text(t *testing.T) {
 
 func TestStealthCtx_Visible(t *testing.T) {
 	page := navigateTo(t, "/")
-	sc := getStealthCtx(page)
+	sc := getStealthCtx(page, &State{})
 
 	nodeID, err := sc.element("#submit-btn", defaultTimeout)
 	if err != nil {
@@ -1896,7 +1896,7 @@ func TestStealthCtx_EaseInOut(t *testing.T) {
 
 func TestStealthCtx_Click(t *testing.T) {
 	page := navigateTo(t, "/stealth-trap")
-	sc := getStealthCtx(page)
+	sc := getStealthCtx(page, &State{})
 
 	nodeID, err := sc.element("#target-btn", defaultTimeout)
 	if err != nil {
@@ -1925,7 +1925,7 @@ func TestStealthCtx_Click(t *testing.T) {
 
 func TestStealthCtx_Hover(t *testing.T) {
 	page := navigateTo(t, "/")
-	sc := getStealthCtx(page)
+	sc := getStealthCtx(page, &State{})
 
 	nodeID, err := sc.element("#submit-btn", defaultTimeout)
 	if err != nil {
@@ -1940,7 +1940,7 @@ func TestStealthCtx_Hover(t *testing.T) {
 
 func TestStealthCtx_TypeText(t *testing.T) {
 	page := navigateTo(t, "/form")
-	sc := getStealthCtx(page)
+	sc := getStealthCtx(page, &State{})
 
 	nodeID, err := sc.element("#name-input", defaultTimeout)
 	if err != nil {
@@ -1963,7 +1963,7 @@ func TestStealthCtx_TypeText(t *testing.T) {
 
 func TestStealthCtx_ClearInput(t *testing.T) {
 	page := navigateTo(t, "/form")
-	sc := getStealthCtx(page)
+	sc := getStealthCtx(page, &State{})
 
 	nodeID, err := sc.element("#name-input", defaultTimeout)
 	if err != nil {
@@ -1991,7 +1991,7 @@ func TestStealthCtx_ClearInput(t *testing.T) {
 
 func TestStealthCtx_Select(t *testing.T) {
 	page := navigateTo(t, "/form")
-	sc := getStealthCtx(page)
+	sc := getStealthCtx(page, &State{})
 
 	nodeID, err := sc.element("#topic", defaultTimeout)
 	if err != nil {
@@ -2014,7 +2014,7 @@ func TestStealthCtx_Select(t *testing.T) {
 
 func TestStealthCtx_Submit(t *testing.T) {
 	page := navigateTo(t, "/form")
-	sc := getStealthCtx(page)
+	sc := getStealthCtx(page, &State{})
 
 	nodeID, err := sc.element("form", defaultTimeout)
 	if err != nil {
@@ -2028,7 +2028,7 @@ func TestStealthCtx_Submit(t *testing.T) {
 
 func TestStealthCtx_Download(t *testing.T) {
 	page := navigateTo(t, "/download")
-	sc := getStealthCtx(page)
+	sc := getStealthCtx(page, &State{})
 
 	nodeID, err := sc.element("#file-link", defaultTimeout)
 	if err != nil {
@@ -2045,7 +2045,7 @@ func TestStealthCtx_Download(t *testing.T) {
 
 func TestStealthCtx_ScreenshotEl(t *testing.T) {
 	page := navigateTo(t, "/")
-	sc := getStealthCtx(page)
+	sc := getStealthCtx(page, &State{})
 
 	nodeID, err := sc.element("#submit-btn", defaultTimeout)
 	if err != nil {
@@ -2066,7 +2066,7 @@ func TestStealthCtx_ScreenshotEl(t *testing.T) {
 
 func TestStealthCtx_Focus(t *testing.T) {
 	page := navigateTo(t, "/form")
-	sc := getStealthCtx(page)
+	sc := getStealthCtx(page, &State{})
 
 	nodeID, err := sc.element("#name-input", defaultTimeout)
 	if err != nil {
@@ -2094,7 +2094,7 @@ func TestStealthCtx_Focus(t *testing.T) {
 
 func TestStealthIntegration_ClickWithoutDetection(t *testing.T) {
 	page := navigateTo(t, "/stealth-trap")
-	sc := getStealthCtx(page)
+	sc := getStealthCtx(page, &State{})
 
 	nodeID, err := sc.element("#target-btn", defaultTimeout)
 	if err != nil {

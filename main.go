@@ -79,13 +79,15 @@ func resolveStateDir(mode scopeMode, workingDir string) string {
 
 // State persisted between CLI invocations
 type State struct {
-	DebugURL    string `json:"debug_url"`
-	ChromePID   int    `json:"chrome_pid"`
-	ActivePage  int    `json:"active_page"`  // index into pages list
-	DataDir     string `json:"data_dir"`
-	ProxyPID    int    `json:"proxy_pid,omitempty"`  // PID of auth proxy helper
-	ProxyPort   int    `json:"proxy_port,omitempty"` // local port of auth proxy
-	Stealth     bool   `json:"stealth,omitempty"`
+	DebugURL       string `json:"debug_url"`
+	ChromePID      int    `json:"chrome_pid"`
+	ActivePage     int    `json:"active_page"`  // index into pages list
+	DataDir        string `json:"data_dir"`
+	ProxyPID       int    `json:"proxy_pid,omitempty"`  // PID of auth proxy helper
+	ProxyPort      int    `json:"proxy_port,omitempty"` // local port of auth proxy
+	Stealth        bool   `json:"stealth,omitempty"`
+	ViewportWidth  int    `json:"viewport_width,omitempty"`
+	ViewportHeight int    `json:"viewport_height,omitempty"`
 }
 
 func stateDir() string {
@@ -615,14 +617,27 @@ func cmdStart(args []string) {
 	// Get Chrome PID from the launcher
 	pid := l.PID()
 
+	var vpWidth, vpHeight int
+	if flags.stealth {
+		vp := flags.viewport
+		if vp == "" {
+			vp = "1920x935"
+		}
+		parts := strings.SplitN(vp, "x", 2)
+		vpWidth, _ = strconv.Atoi(parts[0])
+		vpHeight, _ = strconv.Atoi(parts[1])
+	}
+
 	state := &State{
-		DebugURL:   debugURL,
-		ChromePID:  pid,
-		ActivePage: 0,
-		DataDir:    dataDir,
-		ProxyPID:   proxyPID,
-		ProxyPort:  proxyPort,
-		Stealth:    flags.stealth,
+		DebugURL:       debugURL,
+		ChromePID:      pid,
+		ActivePage:     0,
+		DataDir:        dataDir,
+		ProxyPID:       proxyPID,
+		ProxyPort:      proxyPort,
+		Stealth:        flags.stealth,
+		ViewportWidth:  vpWidth,
+		ViewportHeight: vpHeight,
 	}
 
 	if err := saveState(state); err != nil {
@@ -630,13 +645,6 @@ func cmdStart(args []string) {
 	}
 
 	if flags.stealth {
-		vp := flags.viewport
-		if vp == "" {
-			vp = "1920x935"
-		}
-		parts := strings.SplitN(vp, "x", 2)
-		vpWidth, _ := strconv.Atoi(parts[0])
-		vpHeight, _ := strconv.Atoi(parts[1])
 
 		browser, err := connectBrowser(state)
 		if err == nil {
@@ -872,7 +880,7 @@ func cmdTitle(args []string) {
 func cmdHTML(args []string) {
 	s, _, page := withPage()
 	if s.Stealth {
-		sc := getStealthCtx(page)
+		sc := getStealthCtx(page, s)
 		if len(args) > 0 {
 			nodeID, err := sc.element(args[0], defaultTimeout)
 			if err != nil {
@@ -914,7 +922,7 @@ func cmdText(args []string) {
 	}
 	s, _, page := withPage()
 	if s.Stealth {
-		sc := getStealthCtx(page)
+		sc := getStealthCtx(page, s)
 		nodeID, err := sc.element(args[0], defaultTimeout)
 		if err != nil {
 			fatal("element not found: %v", err)
@@ -943,7 +951,7 @@ func cmdAttr(args []string) {
 	}
 	s, _, page := withPage()
 	if s.Stealth {
-		sc := getStealthCtx(page)
+		sc := getStealthCtx(page, s)
 		nodeID, err := sc.element(args[0], defaultTimeout)
 		if err != nil {
 			fatal("element not found: %v", err)
@@ -1002,7 +1010,7 @@ func cmdJS(args []string) {
 	s, _, page := withPage()
 
 	if s.Stealth {
-		sc := getStealthCtx(page)
+		sc := getStealthCtx(page, s)
 		result, err := sc.eval(expr)
 		if err != nil {
 			fatal("JS error: %v", err)
@@ -1057,7 +1065,7 @@ func cmdClick(args []string) {
 	}
 	s, _, page := withPage()
 	if s.Stealth {
-		sc := getStealthCtx(page)
+		sc := getStealthCtx(page, s)
 		nodeID, err := sc.element(args[0], defaultTimeout)
 		if err != nil {
 			fatal("element not found: %v", err)
@@ -1088,7 +1096,7 @@ func cmdInput(args []string) {
 	s, _, page := withPage()
 	text := strings.Join(args[1:], " ")
 	if s.Stealth {
-		sc := getStealthCtx(page)
+		sc := getStealthCtx(page, s)
 		nodeID, err := sc.element(args[0], defaultTimeout)
 		if err != nil {
 			fatal("element not found: %v", err)
@@ -1113,7 +1121,7 @@ func cmdClear(args []string) {
 	}
 	s, _, page := withPage()
 	if s.Stealth {
-		sc := getStealthCtx(page)
+		sc := getStealthCtx(page, s)
 		nodeID, err := sc.element(args[0], defaultTimeout)
 		if err != nil {
 			fatal("element not found: %v", err)
@@ -1186,7 +1194,7 @@ func cmdDownload(args []string) {
 	s, _, page := withPage()
 
 	if s.Stealth {
-		sc := getStealthCtx(page)
+		sc := getStealthCtx(page, s)
 		nodeID, err := sc.element(selector, defaultTimeout)
 		if err != nil {
 			fatal("element not found: %v", err)
@@ -1368,7 +1376,7 @@ func cmdSelect(args []string) {
 	}
 	s, _, page := withPage()
 	if s.Stealth {
-		sc := getStealthCtx(page)
+		sc := getStealthCtx(page, s)
 		nodeID, err := sc.element(args[0], defaultTimeout)
 		if err != nil {
 			fatal("element not found: %v", err)
@@ -1400,7 +1408,7 @@ func cmdSubmit(args []string) {
 	}
 	s, _, page := withPage()
 	if s.Stealth {
-		sc := getStealthCtx(page)
+		sc := getStealthCtx(page, s)
 		nodeID, err := sc.element(args[0], defaultTimeout)
 		if err != nil {
 			fatal("form not found: %v", err)
@@ -1425,7 +1433,7 @@ func cmdHover(args []string) {
 	}
 	s, _, page := withPage()
 	if s.Stealth {
-		sc := getStealthCtx(page)
+		sc := getStealthCtx(page, s)
 		nodeID, err := sc.element(args[0], defaultTimeout)
 		if err != nil {
 			fatal("element not found: %v", err)
@@ -1450,7 +1458,7 @@ func cmdFocus(args []string) {
 	}
 	s, _, page := withPage()
 	if s.Stealth {
-		sc := getStealthCtx(page)
+		sc := getStealthCtx(page, s)
 		nodeID, err := sc.element(args[0], defaultTimeout)
 		if err != nil {
 			fatal("element not found: %v", err)
@@ -1475,7 +1483,7 @@ func cmdWait(args []string) {
 	}
 	s, _, page := withPage()
 	if s.Stealth {
-		sc := getStealthCtx(page)
+		sc := getStealthCtx(page, s)
 		nodeID, err := sc.element(args[0], defaultTimeout)
 		if err != nil {
 			fatal("element not found: %v", err)
@@ -1625,7 +1633,7 @@ func cmdScreenshotEl(args []string) {
 	}
 	s, _, page := withPage()
 	if s.Stealth {
-		sc := getStealthCtx(page)
+		sc := getStealthCtx(page, s)
 		nodeID, err := sc.element(args[0], defaultTimeout)
 		if err != nil {
 			fatal("element not found: %v", err)
@@ -1803,7 +1811,7 @@ func cmdExists(args []string) {
 	}
 	s, _, page := withPage()
 	if s.Stealth {
-		sc := getStealthCtx(page)
+		sc := getStealthCtx(page, s)
 		found, err := sc.exists(args[0])
 		if err != nil {
 			fatal("query failed: %v", err)
@@ -1836,7 +1844,7 @@ func cmdCount(args []string) {
 	}
 	s, _, page := withPage()
 	if s.Stealth {
-		sc := getStealthCtx(page)
+		sc := getStealthCtx(page, s)
 		n, err := sc.count(args[0])
 		if err != nil {
 			fatal("query failed: %v", err)
@@ -1857,7 +1865,7 @@ func cmdVisible(args []string) {
 	}
 	s, _, page := withPage()
 	if s.Stealth {
-		sc := getStealthCtx(page)
+		sc := getStealthCtx(page, s)
 		nodeID, err := sc.element(args[0], defaultTimeout)
 		if err != nil {
 			fmt.Println("false")
@@ -1950,7 +1958,7 @@ func cmdAssert(args []string) {
 	var raw, actual string
 
 	if s.Stealth {
-		sc := getStealthCtx(page)
+		sc := getStealthCtx(page, s)
 		result, err := sc.eval(expr)
 		if err != nil {
 			fatal("JS error: %v", err)
