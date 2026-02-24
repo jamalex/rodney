@@ -1718,3 +1718,99 @@ func TestStealthCtx_IsolatedWorldEval(t *testing.T) {
 		t.Errorf("expected 'Test Page', got %q", title)
 	}
 }
+
+func TestStealthCtx_Exists(t *testing.T) {
+	page := navigateTo(t, "/")
+	sc := getStealthCtx(page)
+
+	// #submit-btn should exist
+	found, err := sc.exists("#submit-btn")
+	if err != nil {
+		t.Fatalf("exists() failed: %v", err)
+	}
+	if !found {
+		t.Error("expected #submit-btn to exist, got false")
+	}
+
+	// #nonexistent should not exist
+	found, err = sc.exists("#nonexistent")
+	if err != nil {
+		t.Fatalf("exists() failed: %v", err)
+	}
+	if found {
+		t.Error("expected #nonexistent to not exist, got true")
+	}
+}
+
+func TestStealthCtx_Count(t *testing.T) {
+	page := navigateTo(t, "/")
+	sc := getStealthCtx(page)
+
+	n, err := sc.count("button")
+	if err != nil {
+		t.Fatalf("count() failed: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("expected 2 buttons, got %d", n)
+	}
+}
+
+func TestStealthCtx_Attr(t *testing.T) {
+	page := navigateTo(t, "/")
+	sc := getStealthCtx(page)
+
+	nodeID, err := sc.element("#cancel-btn", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element() failed: %v", err)
+	}
+
+	val, err := sc.attr(nodeID, "id")
+	if err != nil {
+		t.Fatalf("attr() failed: %v", err)
+	}
+	if val != "cancel-btn" {
+		t.Errorf("expected attr id='cancel-btn', got %q", val)
+	}
+}
+
+func TestStealthCtx_HTML(t *testing.T) {
+	page := navigateTo(t, "/")
+	sc := getStealthCtx(page)
+
+	nodeID, err := sc.element("#submit-btn", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element() failed: %v", err)
+	}
+
+	html, err := sc.outerHTML(nodeID)
+	if err != nil {
+		t.Fatalf("outerHTML() failed: %v", err)
+	}
+	if !strings.Contains(html, "Submit") {
+		t.Errorf("expected outerHTML to contain 'Submit', got %q", html)
+	}
+}
+
+func TestStealthCtx_Focus(t *testing.T) {
+	page := navigateTo(t, "/form")
+	sc := getStealthCtx(page)
+
+	nodeID, err := sc.element("#name-input", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element() failed: %v", err)
+	}
+
+	if err := sc.focus(nodeID); err != nil {
+		t.Fatalf("focus() failed: %v", err)
+	}
+
+	// Verify via isolated world eval that the active element is the input
+	result, err := sc.eval("document.activeElement.id")
+	if err != nil {
+		t.Fatalf("eval() failed: %v", err)
+	}
+	activeID := result.Result.Value.Str()
+	if activeID != "name-input" {
+		t.Errorf("expected activeElement.id='name-input', got %q", activeID)
+	}
+}

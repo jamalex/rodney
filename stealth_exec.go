@@ -256,3 +256,80 @@ func (sc *stealthCtx) resolveNode(nodeID proto.DOMNodeID, ctxID proto.RuntimeExe
 		ExecutionContextID: ctxID,
 	}.Call(sc.page)
 }
+
+// exists does an instant check (no polling/wait) whether a CSS selector matches any element.
+// Uses pure CDP DOM.querySelector — no JavaScript execution.
+func (sc *stealthCtx) exists(selector string) (bool, error) {
+	rootID, err := sc.getDocRoot()
+	if err != nil {
+		return false, err
+	}
+	result, err := proto.DOMQuerySelector{
+		NodeID:   rootID,
+		Selector: selector,
+	}.Call(sc.page)
+	if err != nil {
+		return false, fmt.Errorf("DOM.querySelector failed: %w", err)
+	}
+	return result.NodeID != 0, nil
+}
+
+// count does an instant check returning how many elements match a CSS selector.
+// Uses pure CDP DOM.querySelectorAll — no JavaScript execution.
+func (sc *stealthCtx) count(selector string) (int, error) {
+	rootID, err := sc.getDocRoot()
+	if err != nil {
+		return 0, err
+	}
+	result, err := proto.DOMQuerySelectorAll{
+		NodeID:   rootID,
+		Selector: selector,
+	}.Call(sc.page)
+	if err != nil {
+		return 0, fmt.Errorf("DOM.querySelectorAll failed: %w", err)
+	}
+	return len(result.NodeIDs), nil
+}
+
+// attr retrieves a single attribute value from a DOM node by name.
+// Uses pure CDP DOM.getAttributes — no JavaScript execution.
+// Returns an error if the attribute is not found on the node.
+func (sc *stealthCtx) attr(nodeID proto.DOMNodeID, name string) (string, error) {
+	result, err := proto.DOMGetAttributes{
+		NodeID: nodeID,
+	}.Call(sc.page)
+	if err != nil {
+		return "", fmt.Errorf("DOM.getAttributes failed: %w", err)
+	}
+	// Attributes come as a flat [name, value, name, value, ...] array.
+	for i := 0; i+1 < len(result.Attributes); i += 2 {
+		if result.Attributes[i] == name {
+			return result.Attributes[i+1], nil
+		}
+	}
+	return "", fmt.Errorf("attribute %q not found on node %d", name, nodeID)
+}
+
+// outerHTML retrieves the outer HTML markup of a DOM node.
+// Uses pure CDP DOM.getOuterHTML — no JavaScript execution.
+func (sc *stealthCtx) outerHTML(nodeID proto.DOMNodeID) (string, error) {
+	result, err := proto.DOMGetOuterHTML{
+		NodeID: nodeID,
+	}.Call(sc.page)
+	if err != nil {
+		return "", fmt.Errorf("DOM.getOuterHTML failed: %w", err)
+	}
+	return result.OuterHTML, nil
+}
+
+// focus sets focus on a DOM node.
+// Uses pure CDP DOM.focus — no JavaScript execution.
+func (sc *stealthCtx) focus(nodeID proto.DOMNodeID) error {
+	err := proto.DOMFocus{
+		NodeID: nodeID,
+	}.Call(sc.page)
+	if err != nil {
+		return fmt.Errorf("DOM.focus failed: %w", err)
+	}
+	return nil
+}
