@@ -1,10 +1,10 @@
 # Stealth Mode: Known Detection Gaps
 
-Current stealth implementation uses a Chrome extension + `--disable-blink-features=AutomationControlled` flag. This passes most bot detection tests but has inherent limitations from using CDP (Chrome DevTools Protocol) via go-rod.
+Current stealth implementation uses CDP script injection (`Page.addScriptToEvaluateOnNewDocument`) + `--disable-blink-features=AutomationControlled` flag. In stealth mode, rodney prefers a system-installed mainline Chrome over rod's bundled Chromium, which provides better fingerprint resistance.
 
 Tested against:
-- **bot.incolumitas.com** — 33/36 pass
-- **bot-detector.rebrowser.net** — 8/10 pass (in stealth mode)
+- **bot.incolumitas.com** — 34/36 pass
+- **bot-detector.rebrowser.net** — 10/10 pass (with Chrome 145+ and stealth mode)
 
 ## 1. Main World Execution (rebrowser: `mainWorldExecution`) — RESOLVED
 
@@ -25,26 +25,17 @@ Any page can monkey-patch DOM APIs (`document.querySelector`, `querySelectorAll`
 | `js <expr>`, `assert <expr>` | `html <selector>` (retrieval part) |
 | `attr`, `download`, `screenshot-el` | |
 
-**Possible fixes:**
-- Rod adds isolated world support (upstream feature request)
-- Use [rebrowser-patches](https://github.com/nicktate/puppeteer-extra-stealth-js) to patch Chromium binary
-- Switch to a framework with isolated world support (Playwright)
-
-## 2. Runtime.enable Leak (rebrowser: `runtimeEnableLeak`)
+## 2. Runtime.enable Leak (rebrowser: `runtimeEnableLeak`) — RESOLVED
 
 Rod must send CDP `Runtime.enable` to evaluate JavaScript. Pages can detect this by using `console.debug()` with a trapped error stack getter — when `Runtime.enable` is active, Chrome reads the stack to send `Runtime.consoleAPICalled` events, incrementing a counter the page monitors.
 
-**Possible fixes:**
-- Patch Chromium binary to not leak stack reads (rebrowser-patches)
-- No JS-level fix exists; this is a protocol-level artifact
+**Status:** Resolved in Chrome 145+. V8 commit `e08e97347454255a337dcea361808fb25ca09077` changed error serialization to skip user-defined getters, neutralizing this detection. No code changes needed — stealth mode prefers mainline Chrome which includes this fix.
 
-## 3. User Agent Version (rebrowser: `useragent`)
+## 3. User Agent Version (rebrowser: `useragent`) — RESOLVED
 
-Rod's bundled Chromium (v128.0.6568.0, open-source snapshot) doesn't expose `navigator.userAgentData`, so version-checking tests can't determine our Chrome version. Additionally, the version is a dev snapshot that may not match any real Chrome stable release, which could be flagged by UA-based detection.
+Rod's bundled Chromium (v128.0.6568.0, open-source snapshot) doesn't expose `navigator.userAgentData`, so version-checking tests can't determine our Chrome version.
 
-**Possible fixes:**
-- Download a stable Chromium release instead of rod's dev snapshot
-- Override `navigator.userAgentData` via the extension to report a plausible version
+**Status:** Resolved via CDP `Emulation.setUserAgentOverride` with `userAgentMetadata`. When stealth mode starts, `applyStealthToPage` reads the actual browser version via `Browser.getVersion` and populates `navigator.userAgentData.brands` with proper entries including `"Google Chrome"`, `"Chromium"`, and `"Not_A Brand"`. This works with both mainline Chrome and rod's bundled Chromium.
 
 ## 4. Service Worker Navigator Inconsistency (incolumitas: `inconsistentServiceWorkerNavigatorPropery`)
 
