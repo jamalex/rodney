@@ -634,7 +634,10 @@ func cmdStart(args []string) {
 	pid := l.PID()
 
 	var vpWidth, vpHeight int
-	if flags.stealth {
+	if flags.stealth && headless {
+		// Only override viewport in headless mode. In visible mode the
+		// window controls the viewport — EmulationSetDeviceMetricsOverride
+		// would shrink the content area and fight with the window size.
 		vp := flags.viewport
 		if vp == "" {
 			vp = "1920x935"
