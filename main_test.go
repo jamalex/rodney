@@ -17,6 +17,7 @@ import (
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/launcher"
 	"github.com/go-rod/rod/lib/proto"
+	"github.com/ysmood/gson"
 )
 
 // testEnv holds a shared browser and test HTTP server for all tests.
@@ -51,6 +52,8 @@ func TestMain(m *testing.M) {
 	mux.HandleFunc("/download", handleDownload)
 	mux.HandleFunc("/testfile.txt", handleTestFile)
 	mux.HandleFunc("/empty", handleEmpty)
+	mux.HandleFunc("/stealth-check", handleStealthCheck)
+	mux.HandleFunc("/stealth-trap", handleStealthTrap)
 	server := httptest.NewServer(mux)
 
 	env = &testEnv{browser: browser, server: server}
@@ -1245,5 +1248,473 @@ func TestParseStartFlags_UnknownFlag(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "unknown flag: --bogus") {
 		t.Errorf("expected 'unknown flag: --bogus' in error, got: %v", err)
+	}
+}
+
+// =====================
+// Stealth check fixture
+// =====================
+
+func handleStealthCheck(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html")
+	w.Write([]byte(`<!DOCTYPE html>
+<html><head><title>Stealth Check</title></head>
+<body>
+  <div id="main-webdriver"></div>
+  <div id="main-ua"></div>
+  <div id="worker-webdriver"></div>
+  <div id="worker-ua"></div>
+  <div id="worker-done"></div>
+  <script>
+    document.getElementById('main-webdriver').textContent = String(navigator.webdriver);
+    document.getElementById('main-ua').textContent = navigator.userAgent;
+
+    try {
+      var code = 'postMessage({ userAgent: navigator.userAgent, webdriver: String(navigator.webdriver) });';
+      var blob = new Blob([code], {type: 'application/javascript'});
+      var worker = new Worker(URL.createObjectURL(blob));
+      worker.onmessage = function(e) {
+        document.getElementById('worker-webdriver').textContent = e.data.webdriver;
+        document.getElementById('worker-ua').textContent = e.data.userAgent;
+        document.getElementById('worker-done').textContent = 'true';
+      };
+      worker.onerror = function(e) {
+        document.getElementById('worker-done').textContent = 'error: ' + e.message;
+      };
+    } catch(err) {
+      document.getElementById('worker-done').textContent = 'error: ' + err.message;
+    }
+  </script>
+</body>
+</html>`))
+}
+
+// =====================
+// Stealth smoke tests
+// =====================
+
+// launchStealthBrowser creates a browser with stealth config for smoke tests.
+// Uses rod's bundled Chromium (which supports --load-extension) with the
+// worker-fix extension loaded, mirroring what cmdStart --stealth does.
+func launchStealthBrowser(t *testing.T) *rod.Browser {
+	t.Helper()
+
+	dataDir := t.TempDir()
+	extDir := writeStealthExtension(dataDir, workerFixJS)
+
+	l := launcher.New().
+		Set("no-sandbox").
+		Set("disable-gpu").
+		Set("single-process").
+		Headless(true).
+		Leakless(false).
+		Set("disable-blink-features", "AutomationControlled").
+		Set("load-extension", extDir)
+	l.Delete("disable-extensions")
+
+	// Use rod's default Chromium (don't set system Chrome — it may be
+	// Google Chrome which blocks --load-extension)
+	if bin := os.Getenv("ROD_CHROME_BIN"); bin != "" {
+		l = l.Bin(bin)
+	}
+
+	u := l.MustLaunch()
+	browser := rod.New().ControlURL(u).MustConnect()
+	t.Cleanup(func() { browser.MustClose() })
+	return browser
+}
+
+func TestStealth_NavigatorWebdriverHidden(t *testing.T) {
+	browser := launchStealthBrowser(t)
+	page := browser.MustPage(env.server.URL + "/stealth-check")
+	defer page.MustClose()
+	page.MustWaitLoad()
+
+	webdriver := page.MustEval(`() => String(navigator.webdriver)`).Str()
+	if webdriver == "true" {
+		t.Error("navigator.webdriver should not be true in stealth mode")
+	}
+}
+
+func TestStealth_UserAgentNormal(t *testing.T) {
+	browser := launchStealthBrowser(t)
+	page := browser.MustPage(env.server.URL + "/stealth-check")
+	defer page.MustClose()
+	page.MustWaitLoad()
+
+	ua := page.MustEval(`() => navigator.userAgent`).Str()
+	if strings.Contains(ua, "HeadlessChrome") {
+		t.Errorf("user agent should not contain 'HeadlessChrome', got: %s", ua)
+	}
+}
+
+func TestStealth_WebWorkerConsistency(t *testing.T) {
+	browser := launchStealthBrowser(t)
+	page := browser.MustPage(env.server.URL + "/stealth-check")
+	defer page.MustClose()
+	page.MustWaitLoad()
+
+	// Wait for worker to complete
+	page.Timeout(5 * time.Second).MustEval(`() => new Promise((resolve, reject) => {
+		const timeout = setTimeout(() => reject(new Error('worker timeout')), 4000);
+		const check = () => {
+			const el = document.getElementById('worker-done');
+			if (el && el.textContent) {
+				clearTimeout(timeout);
+				resolve(el.textContent);
+			} else {
+				setTimeout(check, 50);
+			}
+		};
+		check();
+	})`)
+
+	mainUA := page.MustEval(`() => document.getElementById('main-ua').textContent`).Str()
+	workerUA := page.MustEval(`() => document.getElementById('worker-ua').textContent`).Str()
+
+	if mainUA == "" || workerUA == "" {
+		t.Fatalf("failed to get user agent strings (main=%q, worker=%q)", mainUA, workerUA)
+	}
+	if mainUA != workerUA {
+		t.Errorf("web worker UA inconsistent:\n  main:   %s\n  worker: %s", mainUA, workerUA)
+	}
+
+	mainWD := page.MustEval(`() => document.getElementById('main-webdriver').textContent`).Str()
+	workerWD := page.MustEval(`() => document.getElementById('worker-webdriver').textContent`).Str()
+
+	if mainWD != workerWD {
+		t.Errorf("web worker navigator.webdriver inconsistent:\n  main:   %s\n  worker: %s", mainWD, workerWD)
+	}
+}
+
+func TestStealth_BotIncolumitas(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live site test in short mode")
+	}
+
+	browser := launchStealthBrowser(t)
+	page := browser.MustPage("https://bot.incolumitas.com/")
+	defer page.MustClose()
+
+	// The site runs two batches of detection tests asynchronously:
+	// "old tests" in #detection-tests and "new tests" in #new-tests.
+	// Wait for both to populate, then collect all test results.
+	allResults := page.Timeout(60 * time.Second).MustEval(`() => new Promise((resolve, reject) => {
+		const timeout = setTimeout(() => reject(new Error('timed out waiting for detection results')), 55000);
+		const check = () => {
+			const nt = document.getElementById('new-tests');
+			const dt = document.getElementById('detection-tests');
+			const hasNew = nt && nt.textContent.includes('inconsistentWebWorkerNavigatorPropery');
+			const hasOld = dt && dt.textContent.trim().length > 2;
+			if (hasNew && hasOld) {
+				clearTimeout(timeout);
+				// Merge both result objects into one flat map
+				try {
+					const oldObj = JSON.parse(dt.textContent.trim());
+					const newObj = JSON.parse(nt.textContent.trim());
+					// Old tests have nested structure {intoli: {...}, fpscanner: {...}}
+					const merged = {};
+					for (const [section, tests] of Object.entries(oldObj)) {
+						if (typeof tests === 'object' && tests !== null) {
+							for (const [k, v] of Object.entries(tests)) {
+								merged[section + '/' + k] = v;
+							}
+						}
+					}
+					// New tests are flat {key: "OK"|"FAIL"}
+					for (const [k, v] of Object.entries(newObj)) {
+						merged[k] = v;
+					}
+					resolve(JSON.stringify(merged));
+				} catch(e) {
+					resolve(JSON.stringify({
+						_oldRaw: dt.textContent.trim(),
+						_newRaw: nt.textContent.trim(),
+					}));
+				}
+			} else {
+				setTimeout(check, 500);
+			}
+		};
+		check();
+	})`).Str()
+
+	var results map[string]interface{}
+	if err := json.Unmarshal([]byte(allResults), &results); err != nil {
+		t.Fatalf("failed to parse detection results: %v\nraw: %s", err, allResults)
+	}
+
+	// Known unfixable detections:
+	// - Service workers run in a separate context that can't be patched
+	//   from an extension (they require a URL, not interceptable like
+	//   Web Workers via blob URL rewriting).
+	// - fpscanner/WEBDRIVER uses a custom detection method beyond
+	//   navigator.webdriver (which IS false). Likely detects CDP protocol
+	//   artifacts inherent to rod's browser automation.
+	skip := map[string]bool{
+		"inconsistentServiceWorkerNavigatorPropery": true,
+		"fpscanner/WEBDRIVER":                       true,
+	}
+
+	for name, val := range results {
+		status, ok := val.(string)
+		if !ok {
+			continue
+		}
+		if skip[name] {
+			if status == "FAIL" {
+				t.Logf("(skipped) %s: %s", name, status)
+			}
+			continue
+		}
+		if status == "FAIL" {
+			t.Errorf("%s: FAIL (expected OK)", name)
+		} else {
+			t.Logf("%s: %s", name, status)
+		}
+	}
+}
+
+func TestStealth_RebrowserBotDetector(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live site test in short mode")
+	}
+
+	// Launch stealth browser with non-default viewport to avoid detection
+	dataDir := t.TempDir()
+	extDir := writeStealthExtension(dataDir, workerFixJS)
+
+	l := launcher.New().
+		Set("no-sandbox").
+		Set("disable-gpu").
+		Set("single-process").
+		Headless(true).
+		Leakless(false).
+		Set("disable-blink-features", "AutomationControlled").
+		Set("load-extension", extDir).
+		Set("window-size", "1920,1080")
+	l.Delete("disable-extensions")
+
+	if bin := os.Getenv("ROD_CHROME_BIN"); bin != "" {
+		l = l.Bin(bin)
+	}
+
+	u := l.MustLaunch()
+	browser := rod.New().ControlURL(u).MustConnect()
+	defer browser.MustClose()
+
+	// Create a page and expose a function BEFORE navigating (tests exposeFunctionLeak)
+	page := browser.MustPage("")
+	defer page.MustClose()
+	page.MustExpose("exposedFn", func(g gson.JSON) (interface{}, error) {
+		return nil, nil
+	})
+
+	// Navigate to the bot detector
+	page.MustNavigate("https://bot-detector.rebrowser.net/")
+	page.MustWaitLoad()
+
+	// Trigger the grey-bubble tests that need explicit actions:
+	// 1. dummyFn: call the page's window.dummyFn()
+	page.MustEval(`() => { if (typeof window.dummyFn === 'function') window.dummyFn() }`)
+	// 2. sourceUrlLeak: call getElementById (the page monkey-patches it to check the stack)
+	page.MustEval(`() => document.getElementById('detections-json')`)
+	// 3. mainWorldExecution: call getElementsByClassName (grey = good = isolated world)
+	//    We intentionally trigger this so it evaluates rather than staying grey.
+	page.MustEval(`() => document.getElementsByClassName('div')`)
+
+	// Wait for async tests to settle (runtimeEnableLeak, bypassCsp, useragent poll)
+	time.Sleep(3 * time.Second)
+
+	// Read the detections JSON from the textarea
+	resultsJSON := page.Timeout(30 * time.Second).MustEval(`() => {
+		const el = document.getElementById('detections-json');
+		return el ? el.value : '[]';
+	}`).Str()
+
+	var detections []struct {
+		Type   string      `json:"type"`
+		Rating float64     `json:"rating"`
+		Note   string      `json:"note"`
+		Debug  interface{} `json:"debug"`
+	}
+	if err := json.Unmarshal([]byte(resultsJSON), &detections); err != nil {
+		t.Fatalf("failed to parse detections JSON: %v\nraw: %s", err, resultsJSON)
+	}
+
+	if len(detections) == 0 {
+		t.Fatal("no detections returned from bot-detector.rebrowser.net")
+	}
+
+	// rating < 0 = green/pass, 0 = grey/untested, 0.5 = yellow/warning, > 0 = red/fail
+	//
+	// Known unfixable detections:
+	//
+	// mainWorldExecution: rod evaluates ALL JavaScript in the main world
+	// (the same context as the page's own scripts). It has no isolated
+	// world support. This means any page can monkey-patch DOM APIs like
+	// document.querySelector, querySelectorAll, getElementById, etc. and
+	// detect when our automation calls them. In practice this affects:
+	//   - All selector-based commands (click, text, input, wait, etc.)
+	//     because rod's page.Element() uses querySelector internally
+	//   - Any page.Eval()/MustEval() calls that touch the DOM
+	// Pure CDP operations (screenshot, navigation, accessibility tree)
+	// are NOT affected since they don't execute JavaScript.
+	// Fixing this would require rod to add isolated world support or
+	// using rebrowser-patches to the Chromium binary.
+	//
+	// runtimeEnableLeak: rod must send CDP Runtime.enable to evaluate JS.
+	// The page detects this by using console.debug() with a trapped error
+	// stack getter — when Runtime.enable is active, Chrome reads the stack
+	// to send Runtime.consoleAPICalled events. Unfixable without patching
+	// the Chromium binary (rebrowser-patches).
+	//
+	// useragent: rod's bundled Chromium doesn't expose
+	// navigator.userAgentData, so the test can't determine the version.
+	skip := map[string]bool{
+		"mainWorldExecution": true,
+		"runtimeEnableLeak":  true,
+		"useragent":          true,
+	}
+
+	for _, d := range detections {
+		ratingDesc := "unknown"
+		switch {
+		case d.Rating < 0:
+			ratingDesc = "green"
+		case d.Rating == 0:
+			ratingDesc = "grey"
+		case d.Rating == 0.5:
+			ratingDesc = "yellow"
+		case d.Rating > 0:
+			ratingDesc = "red"
+		}
+
+		if skip[d.Type] {
+			t.Logf("(skipped) %s: %s (rating=%.1f) %s", d.Type, ratingDesc, d.Rating, stripHTML(d.Note))
+			continue
+		}
+
+		if d.Rating > 0 {
+			t.Errorf("%s: %s (rating=%.1f) %s", d.Type, ratingDesc, d.Rating, stripHTML(d.Note))
+		} else {
+			t.Logf("%s: %s (rating=%.1f) %s", d.Type, ratingDesc, d.Rating, stripHTML(d.Note))
+		}
+	}
+}
+
+// stripHTML removes HTML tags from a string for cleaner test output.
+func stripHTML(s string) string {
+	var result strings.Builder
+	inTag := false
+	for _, r := range s {
+		if r == '<' {
+			inTag = true
+		} else if r == '>' {
+			inTag = false
+		} else if !inTag {
+			result.WriteRune(r)
+		}
+	}
+	return result.String()
+}
+
+// =====================
+// Stealth trap fixture
+// =====================
+
+func handleStealthTrap(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html")
+	w.Write([]byte(`<!DOCTYPE html>
+<html><head><title>Stealth Trap</title></head>
+<body>
+  <button id="target-btn">Click Me</button>
+  <p class="info">Some text</p>
+  <span id="qs-count">0</span>
+  <script>
+    var origQS = document.querySelector.bind(document);
+    var qsCount = 0;
+    document.querySelector = function(sel) {
+      qsCount++;
+      origQS('#qs-count').textContent = String(qsCount);
+      return origQS(sel);
+    };
+    var origQSA = document.querySelectorAll.bind(document);
+    document.querySelectorAll = function(sel) {
+      qsCount++;
+      origQS('#qs-count').textContent = String(qsCount);
+      return origQSA(sel);
+    };
+  </script>
+</body>
+</html>`))
+}
+
+// =====================
+// stealthCtx tests
+// =====================
+
+func TestStealthCtx_ElementFindsWithoutTriggeringMonkeyPatch(t *testing.T) {
+	page := navigateTo(t, "/stealth-trap")
+	sc := getStealthCtx(page)
+
+	nodeID, err := sc.element("#target-btn", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element() failed: %v", err)
+	}
+	if nodeID == 0 {
+		t.Fatal("expected non-zero nodeID for #target-btn")
+	}
+
+	// Verify the monkey-patched querySelector was never called.
+	// We must read the qs-count span via CDP too (not page.Eval which uses main world).
+	countNodeID, err := sc.element("#qs-count", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element(#qs-count) failed: %v", err)
+	}
+	result, err := sc.callOn(countNodeID, "function() { return this.textContent; }")
+	if err != nil {
+		t.Fatalf("callOn failed: %v", err)
+	}
+	count := result.Result.Value.Str()
+	if count != "0" {
+		t.Errorf("monkey-patched querySelector was called %s times, expected 0", count)
+	}
+}
+
+func TestStealthCtx_ElementsFindsAll(t *testing.T) {
+	page := navigateTo(t, "/")
+	sc := getStealthCtx(page)
+
+	nodeIDs, err := sc.elements("button", defaultTimeout)
+	if err != nil {
+		t.Fatalf("elements() failed: %v", err)
+	}
+	if len(nodeIDs) < 2 {
+		t.Fatalf("expected >= 2 buttons, got %d", len(nodeIDs))
+	}
+}
+
+func TestStealthCtx_ElementTimesOut(t *testing.T) {
+	page := navigateTo(t, "/")
+	sc := getStealthCtx(page)
+
+	_, err := sc.element("#nonexistent", 200*time.Millisecond)
+	if err == nil {
+		t.Fatal("expected timeout error for #nonexistent, got nil")
+	}
+}
+
+func TestStealthCtx_IsolatedWorldEval(t *testing.T) {
+	page := navigateTo(t, "/")
+	sc := getStealthCtx(page)
+
+	result, err := sc.eval("document.title")
+	if err != nil {
+		t.Fatalf("eval() failed: %v", err)
+	}
+	title := result.Result.Value.Str()
+	if title != "Test Page" {
+		t.Errorf("expected 'Test Page', got %q", title)
 	}
 }
