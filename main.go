@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -379,6 +380,80 @@ const workerFixJS = `(function() {
 })();
 `
 
+// platformName returns the CDP platform name for the current OS.
+func platformName() string {
+	switch runtime.GOOS {
+	case "darwin":
+		return "macOS"
+	case "windows":
+		return "Windows"
+	default:
+		return "Linux"
+	}
+}
+
+// archName returns the CDP architecture name for the current GOARCH.
+func archName() string {
+	switch runtime.GOARCH {
+	case "arm64":
+		return "arm"
+	default:
+		return "x86"
+	}
+}
+
+// applyStealthToPage injects stealth scripts, sets viewport, and configures
+// user agent metadata for a page. Called for both initial and new pages.
+func applyStealthToPage(page *rod.Page, browser *rod.Browser, s *State) {
+	// 1. Inject stealth scripts via CDP before any navigation occurs.
+	// addScriptToEvaluateOnNewDocument persists across navigations.
+	proto.PageAddScriptToEvaluateOnNewDocument{Source: stealth.JS}.Call(page)
+	proto.PageAddScriptToEvaluateOnNewDocument{Source: workerFixJS}.Call(page)
+
+	// 2. Set viewport
+	if s.ViewportWidth > 0 && s.ViewportHeight > 0 {
+		proto.EmulationSetDeviceMetricsOverride{
+			Width:             s.ViewportWidth,
+			Height:            s.ViewportHeight,
+			DeviceScaleFactor: 1,
+		}.Call(page)
+	}
+
+	// 3. Set user agent metadata to populate navigator.userAgentData
+	versionResult, err := proto.BrowserGetVersion{}.Call(browser)
+	if err == nil {
+		majorVer := ""
+		fullVer := ""
+		// Parse Chrome version from Product field (e.g. "Chrome/145.0.7632.109")
+		if strings.HasPrefix(versionResult.Product, "Chrome/") {
+			fullVer = strings.TrimPrefix(versionResult.Product, "Chrome/")
+			if dotIdx := strings.Index(fullVer, "."); dotIdx > 0 {
+				majorVer = fullVer[:dotIdx]
+			} else {
+				majorVer = fullVer
+			}
+		}
+		if majorVer != "" {
+			proto.EmulationSetUserAgentOverride{
+				UserAgent: versionResult.UserAgent,
+				UserAgentMetadata: &proto.EmulationUserAgentMetadata{
+					Brands: []*proto.EmulationUserAgentBrandVersion{
+						{Brand: "Chromium", Version: majorVer},
+						{Brand: "Google Chrome", Version: majorVer},
+						{Brand: "Not_A Brand", Version: "24"},
+					},
+					FullVersionList: []*proto.EmulationUserAgentBrandVersion{
+						{Brand: "Chromium", Version: fullVer},
+						{Brand: "Google Chrome", Version: fullVer},
+					},
+					Platform:     platformName(),
+					Architecture: archName(),
+					Mobile:       false,
+				},
+			}.Call(page)
+		}
+	}
+}
 
 // withPage loads state, connects, and returns the active page.
 // Caller should NOT close the browser (we just disconnect).
@@ -584,16 +659,7 @@ func cmdStart(args []string) {
 			pages, err := browser.Pages()
 			if err == nil {
 				for _, p := range pages {
-					// Inject stealth scripts via CDP before any navigation occurs.
-					// addScriptToEvaluateOnNewDocument persists across navigations.
-					proto.PageAddScriptToEvaluateOnNewDocument{Source: stealth.JS}.Call(p)
-					proto.PageAddScriptToEvaluateOnNewDocument{Source: workerFixJS}.Call(p)
-
-					proto.EmulationSetDeviceMetricsOverride{
-						Width:             vpWidth,
-						Height:            vpHeight,
-						DeviceScaleFactor: 1,
-					}.Call(p)
+					applyStealthToPage(p, browser, state)
 				}
 			}
 		}
@@ -1679,7 +1745,17 @@ func cmdNewPage(args []string) {
 	}
 
 	var page *rod.Page
-	if url != "" {
+	if s.Stealth {
+		// In stealth mode, create a blank page first so we can inject
+		// stealth scripts via addScriptToEvaluateOnNewDocument BEFORE
+		// any navigation occurs.
+		page = browser.MustPage("")
+		applyStealthToPage(page, browser, s)
+		if url != "" {
+			page.MustNavigate(url)
+			page.MustWaitLoad()
+		}
+	} else if url != "" {
 		page = browser.MustPage(url)
 		page.MustWaitLoad()
 	} else {
