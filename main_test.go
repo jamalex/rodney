@@ -1919,6 +1919,57 @@ func TestStealthCtx_Hover(t *testing.T) {
 	// No assertion on effect -- hover primarily needs to not error.
 }
 
+func TestStealthCtx_TypeText(t *testing.T) {
+	page := navigateTo(t, "/form")
+	sc := getStealthCtx(page)
+
+	nodeID, err := sc.element("#name-input", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element failed: %v", err)
+	}
+	err = sc.input(nodeID, "hello")
+	if err != nil {
+		t.Fatalf("input failed: %v", err)
+	}
+
+	// Verify the value was typed
+	result, err := sc.callOn(nodeID, `function() { return this.value; }`)
+	if err != nil {
+		t.Fatalf("callOn failed: %v", err)
+	}
+	if result.Result.Value.Str() != "hello" {
+		t.Errorf("expected 'hello', got %q", result.Result.Value.Str())
+	}
+}
+
+func TestStealthCtx_ClearInput(t *testing.T) {
+	page := navigateTo(t, "/form")
+	sc := getStealthCtx(page)
+
+	nodeID, err := sc.element("#name-input", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element failed: %v", err)
+	}
+	// Type something first
+	err = sc.input(nodeID, "test text")
+	if err != nil {
+		t.Fatalf("input failed: %v", err)
+	}
+	// Clear it
+	err = sc.clearInput(nodeID)
+	if err != nil {
+		t.Fatalf("clear failed: %v", err)
+	}
+
+	result, err := sc.callOn(nodeID, `function() { return this.value; }`)
+	if err != nil {
+		t.Fatalf("callOn failed: %v", err)
+	}
+	if result.Result.Value.Str() != "" {
+		t.Errorf("expected empty string, got %q", result.Result.Value.Str())
+	}
+}
+
 func TestStealthCtx_Focus(t *testing.T) {
 	page := navigateTo(t, "/form")
 	sc := getStealthCtx(page)

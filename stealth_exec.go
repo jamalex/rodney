@@ -366,6 +366,74 @@ func (sc *stealthCtx) focus(nodeID proto.DOMNodeID) error {
 	return nil
 }
 
+// typeChar dispatches keyDown + keyUp for a single character.
+func (sc *stealthCtx) typeChar(ch rune) error {
+	text := string(ch)
+	err := proto.InputDispatchKeyEvent{
+		Type: proto.InputDispatchKeyEventTypeKeyDown,
+		Key:  text,
+		Text: text,
+	}.Call(sc.page)
+	if err != nil {
+		return err
+	}
+	err = proto.InputDispatchKeyEvent{
+		Type: proto.InputDispatchKeyEventTypeKeyUp,
+		Key:  text,
+	}.Call(sc.page)
+	return err
+}
+
+// input focuses the element and types text with human-like timing.
+func (sc *stealthCtx) input(nodeID proto.DOMNodeID, text string) error {
+	if err := sc.focus(nodeID); err != nil {
+		return err
+	}
+	for i, ch := range text {
+		if err := sc.typeChar(ch); err != nil {
+			return fmt.Errorf("typing failed at char %d: %w", i, err)
+		}
+		// Human-like delay: 50-150ms, with occasional longer pauses
+		delay := 50 + rand.Intn(100)
+		if rand.Float64() < 0.1 {
+			delay += 100 + rand.Intn(200) // ~10% chance of hesitation
+		}
+		time.Sleep(time.Duration(delay) * time.Millisecond)
+	}
+	return nil
+}
+
+// clearInput selects all text in the element and deletes it.
+func (sc *stealthCtx) clearInput(nodeID proto.DOMNodeID) error {
+	if err := sc.focus(nodeID); err != nil {
+		return err
+	}
+
+	// Select all text in the input using the isolated world
+	_, err := sc.callOn(nodeID, "function() { this.select(); }")
+	if err != nil {
+		return fmt.Errorf("select failed: %w", err)
+	}
+
+	// Delete selected text using rawKeyDown (required for special keys)
+	err = proto.InputDispatchKeyEvent{
+		Type:                  proto.InputDispatchKeyEventTypeRawKeyDown,
+		Key:                   "Backspace",
+		Code:                  "Backspace",
+		WindowsVirtualKeyCode: 8,
+		NativeVirtualKeyCode:  8,
+	}.Call(sc.page)
+	if err != nil {
+		return fmt.Errorf("backspace failed: %w", err)
+	}
+	proto.InputDispatchKeyEvent{
+		Type: proto.InputDispatchKeyEventTypeKeyUp,
+		Key:  "Backspace",
+		Code: "Backspace",
+	}.Call(sc.page)
+	return nil
+}
+
 // easeInOutCubic is an easing function that starts slow, speeds up, then slows again.
 // t=0 → 0, t=0.5 → ~0.5, t=1 → 1
 func easeInOutCubic(t float64) float64 {
