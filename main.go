@@ -611,10 +611,16 @@ func cmdStart(args []string) {
 	os.MkdirAll(dataDir, 0755)
 
 	l := launcher.New().
-		Set("no-sandbox").
 		Leakless(false).        // Keep Chrome alive after CLI exits
 		UserDataDir(dataDir).
 		Headless(headless)
+
+	// --no-sandbox is only needed when running as root (e.g., Docker
+	// containers). On normal desktops Chrome's sandbox provides important
+	// process isolation for security.
+	if os.Getuid() == 0 {
+		l = l.Set("no-sandbox")
+	}
 
 	// --disable-gpu avoids GPU-related crashes in headless/container
 	// environments. In visible mode we leave GPU enabled since software
