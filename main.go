@@ -135,7 +135,12 @@ func removeState() {
 
 // connectBrowser connects to the running Chrome instance
 func connectBrowser(s *State) (*rod.Browser, error) {
-	browser := rod.New().ControlURL(s.DebugURL)
+	// NoDefaultDevice prevents rod from sending
+	// Emulation.setDeviceMetricsOverride (with its LaptopWithMDPIScreen
+	// default of 1280x800) every time it attaches to a page target.
+	// In visible mode this would shrink the viewport; in stealth headless
+	// mode we set our own viewport via applyStealthToPage instead.
+	browser := rod.New().ControlURL(s.DebugURL).NoDefaultDevice()
 	if err := browser.Connect(); err != nil {
 		return nil, fmt.Errorf("failed to connect to browser (is it still running?): %w", err)
 	}
