@@ -402,6 +402,60 @@ func archName() string {
 	}
 }
 
+// userAgentDataScript builds a JS snippet that overrides navigator.userAgentData
+// to report the given Chrome version and platform. This is injected via
+// addScriptToEvaluateOnNewDocument so it persists even after the CDP session
+// disconnects (unlike Emulation.setUserAgentOverride which is session-scoped).
+func userAgentDataScript(majorVer, fullVer, platform, arch string) string {
+	const tpl = `(function() {
+  'use strict';
+  var brands = Object.freeze([
+    Object.freeze({brand: 'Chromium', version: 'MAJOR_VER'}),
+    Object.freeze({brand: 'Google Chrome', version: 'MAJOR_VER'}),
+    Object.freeze({brand: 'Not_A Brand', version: '24'})
+  ]);
+  var fullVersionList = Object.freeze([
+    Object.freeze({brand: 'Chromium', version: 'FULL_VER'}),
+    Object.freeze({brand: 'Google Chrome', version: 'FULL_VER'})
+  ]);
+  var uaData = {
+    brands: brands,
+    mobile: false,
+    platform: 'PLAT_NAME',
+    getHighEntropyValues: function() {
+      return Promise.resolve({
+        brands: brands,
+        fullVersionList: fullVersionList,
+        mobile: false,
+        model: '',
+        platform: 'PLAT_NAME',
+        platformVersion: '',
+        architecture: 'ARCH_NAME',
+        bitness: '64',
+        uaFullVersion: 'FULL_VER',
+        wow64: false
+      });
+    },
+    toJSON: function() {
+      return {brands: brands, mobile: false, platform: 'PLAT_NAME'};
+    }
+  };
+  if (typeof NavigatorUAData !== 'undefined') {
+    try { Object.setPrototypeOf(uaData, NavigatorUAData.prototype); } catch(e) {}
+  }
+  Object.defineProperty(Navigator.prototype, 'userAgentData', {
+    get: function() { return uaData; },
+    configurable: true,
+    enumerable: true
+  });
+})();`
+	s := strings.ReplaceAll(tpl, "MAJOR_VER", majorVer)
+	s = strings.ReplaceAll(s, "FULL_VER", fullVer)
+	s = strings.ReplaceAll(s, "PLAT_NAME", platform)
+	s = strings.ReplaceAll(s, "ARCH_NAME", arch)
+	return s
+}
+
 // applyStealthToPage injects stealth scripts, sets viewport, and configures
 // user agent metadata for a page. Called for both initial and new pages.
 func applyStealthToPage(page *rod.Page, browser *rod.Browser, s *State) {
@@ -419,7 +473,11 @@ func applyStealthToPage(page *rod.Page, browser *rod.Browser, s *State) {
 		}.Call(page)
 	}
 
-	// 3. Set user agent metadata to populate navigator.userAgentData
+	// 3. Set user agent metadata to populate navigator.userAgentData.
+	// We use BOTH the CDP Emulation.setUserAgentOverride (which sets HTTP
+	// request headers like Sec-CH-UA) AND a JS-based override injected via
+	// addScriptToEvaluateOnNewDocument (which persists after CDP session
+	// disconnect). Belt and suspenders.
 	versionResult, err := proto.BrowserGetVersion{}.Call(browser)
 	if err == nil {
 		majorVer := ""
@@ -434,6 +492,7 @@ func applyStealthToPage(page *rod.Page, browser *rod.Browser, s *State) {
 			}
 		}
 		if majorVer != "" {
+			// CDP override — sets Sec-CH-UA request headers
 			proto.EmulationSetUserAgentOverride{
 				UserAgent: versionResult.UserAgent,
 				UserAgentMetadata: &proto.EmulationUserAgentMetadata{
@@ -450,6 +509,12 @@ func applyStealthToPage(page *rod.Page, browser *rod.Browser, s *State) {
 					Architecture: archName(),
 					Mobile:       false,
 				},
+			}.Call(page)
+
+			// JS override — patches navigator.userAgentData directly so
+			// it survives after the CLI disconnects from the browser.
+			proto.PageAddScriptToEvaluateOnNewDocument{
+				Source: userAgentDataScript(majorVer, fullVer, platformName(), archName()),
 			}.Call(page)
 		}
 	}
@@ -542,10 +607,16 @@ func cmdStart(args []string) {
 
 	l := launcher.New().
 		Set("no-sandbox").
-		Set("disable-gpu").
 		Leakless(false).        // Keep Chrome alive after CLI exits
 		UserDataDir(dataDir).
 		Headless(headless)
+
+	// --disable-gpu avoids GPU-related crashes in headless/container
+	// environments. In visible mode we leave GPU enabled since software
+	// rendering can mishandle HiDPI scaling and cause viewport glitches.
+	if headless {
+		l = l.Set("disable-gpu")
+	}
 
 	// --single-process is required for screenshots in gVisor/container
 	// environments, but crashes mainline Chrome in non-headless mode.
@@ -804,13 +875,29 @@ func cmdOpen(args []string) {
 	pages, _ := browser.Pages()
 	var page *rod.Page
 	if len(pages) == 0 {
-		page = browser.MustPage(url)
+		if s.Stealth {
+			// In stealth mode, create blank page first so stealth scripts
+			// are injected before any navigation occurs.
+			page = browser.MustPage("")
+			applyStealthToPage(page, browser, s)
+			if err := page.Navigate(url); err != nil {
+				fatal("navigation failed: %v", err)
+			}
+		} else {
+			page = browser.MustPage(url)
+		}
 		s.ActivePage = 0
 		saveState(s)
 	} else {
 		page, err = getActivePage(browser, s)
 		if err != nil {
 			fatal("%v", err)
+		}
+		// Re-apply stealth on each navigation. The CDP session from the
+		// previous CLI invocation has disconnected, so session-scoped
+		// state like Emulation.setUserAgentOverride is lost.
+		if s.Stealth {
+			applyStealthToPage(page, browser, s)
 		}
 		if err := page.Navigate(url); err != nil {
 			fatal("navigation failed: %v", err)
