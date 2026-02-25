@@ -39,25 +39,60 @@ const (
 	scopeGlobal                  // force global (~/.rodney/)
 )
 
-// activeStateDir is set once at startup based on --local/--global flags.
+// activeStateDir is set once at startup based on --local/--global/--home-dir flags.
 var activeStateDir string
 
-// extractScopeArgs scans args for --local/--global, removes them, and returns the mode.
-// If both appear, the last one wins.
-func extractScopeArgs(args []string) (scopeMode, []string) {
+// homeDirFlag is set when --home-dir is explicitly passed on the command line.
+// Used by cmdStop to clean up the session directory.
+var homeDirFlag string
+
+// waitForProcessExit polls until the given PID is no longer running, or timeout.
+func waitForProcessExit(pid int, timeout time.Duration) {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		proc, err := os.FindProcess(pid)
+		if err != nil {
+			return
+		}
+		// On Unix, FindProcess always succeeds; use Signal(0) to check if alive
+		if err := proc.Signal(syscall.Signal(0)); err != nil {
+			return // process exited
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// cleanupSessionDir removes a session directory. Only called for directories
+// created via --home-dir (never for default or env-var-based directories).
+func cleanupSessionDir(dir string) {
+	if dir == "" {
+		return
+	}
+	os.RemoveAll(dir)
+}
+
+// extractScopeArgs scans args for --local/--global/--home-dir, removes them, and returns the mode and home dir.
+// If both --local and --global appear, the last one wins. --home-dir takes a path argument.
+func extractScopeArgs(args []string) (scopeMode, string, []string) {
 	mode := scopeAuto
+	homeDir := ""
 	var filtered []string
-	for _, arg := range args {
-		switch arg {
-		case "--local":
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--local":
 			mode = scopeLocal
-		case "--global":
+		case args[i] == "--global":
 			mode = scopeGlobal
+		case args[i] == "--home-dir" && i+1 < len(args):
+			homeDir = args[i+1]
+			i++ // skip the value
+		case strings.HasPrefix(args[i], "--home-dir="):
+			homeDir = args[i][len("--home-dir="):]
 		default:
-			filtered = append(filtered, arg)
+			filtered = append(filtered, args[i])
 		}
 	}
-	return mode, filtered
+	return mode, homeDir, filtered
 }
 
 // resolveStateDir determines the state directory based on scope mode and working directory.
@@ -178,15 +213,20 @@ func main() {
 		os.Exit(2)
 	}
 
-	// Extract --local/--global from all args before dispatching
-	mode, cleanedArgs := extractScopeArgs(os.Args[1:])
+	// Extract --local/--global/--home-dir from all args before dispatching
+	mode, homeDir, cleanedArgs := extractScopeArgs(os.Args[1:])
 	if len(cleanedArgs) == 0 {
 		printUsage()
 		os.Exit(1)
 	}
 
-	wd, _ := os.Getwd()
-	activeStateDir = resolveStateDir(mode, wd)
+	if homeDir != "" {
+		activeStateDir = homeDir
+		homeDirFlag = homeDir
+	} else {
+		wd, _ := os.Getwd()
+		activeStateDir = resolveStateDir(mode, wd)
+	}
 
 	cmd := cleanedArgs[0]
 	args := cleanedArgs[1:]
@@ -837,6 +877,13 @@ func cmdStop(args []string) {
 	}
 	removeState()
 	fmt.Println("Chrome stopped")
+	if homeDirFlag != "" {
+		// Wait for Chrome to fully exit before removing the data directory
+		if s.ChromePID > 0 {
+			waitForProcessExit(s.ChromePID, 5*time.Second)
+		}
+		cleanupSessionDir(homeDirFlag)
+	}
 }
 
 func cmdStatus(args []string) {

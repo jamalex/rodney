@@ -17,13 +17,15 @@ Load a webpage using rodney and extract specific information, driven by a stated
 
 ### Session Isolation
 
-Every invocation creates a fresh session to avoid conflicts with other agents:
+Every invocation creates a fresh session directory to avoid conflicts with other agents:
 
 ```bash
-export RODNEY_HOME=$(mktemp -d /tmp/rodney-session-XXXXXX)
+mktemp -d /tmp/rodney-session-XXXXXX
 ```
 
-If the caller passes an existing `RODNEY_HOME`, reuse that session instead of creating a new one.
+Store the resulting path (e.g. `/tmp/rodney-session-a1b2c3`). Every rodney command in this session must end with `--home-dir <path>` using that path.
+
+If the caller passes an existing session path, reuse it instead of creating a new one.
 
 ### Start Rodney
 
@@ -36,7 +38,7 @@ Determine flags from caller's intent:
 | Explicitly no stealth | (no flags) |
 
 ```bash
-RODNEY_HOME=$RODNEY_HOME rodney start [flags]
+rodney start [flags] --home-dir <session>
 ```
 
 If `start --stealth` fails, retry without `--stealth` and note: "Stealth mode unavailable, proceeding without it."
@@ -44,8 +46,8 @@ If `start --stealth` fails, retry without `--stealth` and note: "Stealth mode un
 ### Navigate
 
 ```bash
-RODNEY_HOME=$RODNEY_HOME rodney open '<url>'
-RODNEY_HOME=$RODNEY_HOME rodney waitstable
+rodney open '<url>' --home-dir <session>
+rodney waitstable --home-dir <session>
 ```
 
 ### Access Checks
@@ -53,8 +55,8 @@ RODNEY_HOME=$RODNEY_HOME rodney waitstable
 After the page loads, check for login walls, CAPTCHAs, or access-denied content:
 
 ```bash
-RODNEY_HOME=$RODNEY_HOME rodney title
-RODNEY_HOME=$RODNEY_HOME rodney js 'document.body.innerText.substring(0, 500)'
+rodney title --home-dir <session>
+rodney js 'document.body.innerText.substring(0, 500)' --home-dir <session>
 ```
 
 Look for indicators like "sign in", "access denied", "403", "captcha", "verify you are human".
@@ -73,35 +75,35 @@ Look for indicators like "sign in", "access denied", "403", "captcha", "verify y
 
 ```bash
 # Page basics
-RODNEY_HOME=$RODNEY_HOME rodney title
-RODNEY_HOME=$RODNEY_HOME rodney url
+rodney title --home-dir <session>
+rodney url --home-dir <session>
 
 # Element text
-RODNEY_HOME=$RODNEY_HOME rodney text '<selector>'
+rodney text '<selector>' --home-dir <session>
 
 # JavaScript for complex extraction
-RODNEY_HOME=$RODNEY_HOME rodney js '<expression>'
+rodney js '<expression>' --home-dir <session>
 
 # Attributes
-RODNEY_HOME=$RODNEY_HOME rodney attr '<selector>' '<name>'
+rodney attr '<selector>' '<name>' --home-dir <session>
 
 # Count elements
-RODNEY_HOME=$RODNEY_HOME rodney count '<selector>'
+rodney count '<selector>' --home-dir <session>
 
 # Raw HTML when structure matters
-RODNEY_HOME=$RODNEY_HOME rodney html '<selector>'
+rodney html '<selector>' --home-dir <session>
 ```
 
 A good starting point for an unfamiliar page:
 ```bash
-RODNEY_HOME=$RODNEY_HOME rodney title
-RODNEY_HOME=$RODNEY_HOME rodney js 'document.body.innerText.substring(0, 3000)'
+rodney title --home-dir <session>
+rodney js 'document.body.innerText.substring(0, 3000)' --home-dir <session>
 ```
 
 **2. Accessibility tree (when selectors aren't obvious)**
 
 ```bash
-RODNEY_HOME=$RODNEY_HOME rodney ax-tree --depth 4
+rodney ax-tree --depth 4 --home-dir <session>
 ```
 
 Useful for understanding page structure without visual inspection.
@@ -115,7 +117,7 @@ Only use when DOM + accessibility tree genuinely can't answer the question:
 - Complex visual layouts where spatial relationships matter
 
 ```bash
-RODNEY_HOME=$RODNEY_HOME rodney screenshot /tmp/page.png
+rodney screenshot /tmp/page.png --home-dir <session>
 ```
 
 When used, note it in the final output: "Note: used a screenshot to interpret [reason]."
@@ -140,7 +142,7 @@ When the goal isn't fully met, follow leads to gather more information.
 
 ```bash
 # Extract relevant links
-RODNEY_HOME=$RODNEY_HOME rodney js 'JSON.stringify(Array.from(document.querySelectorAll("a[href]")).map(a => ({text: a.innerText.trim(), href: a.href})).filter(a => a.text))'
+rodney js 'JSON.stringify(Array.from(document.querySelectorAll("a[href]")).map(a => ({text: a.innerText.trim(), href: a.href})).filter(a => a.text))' --home-dir <session>
 ```
 
 Rank by relevance to the goal. Pursue the best lead first.
@@ -149,29 +151,29 @@ Rank by relevance to the goal. Pursue the best lead first.
 
 **Direct links:**
 ```bash
-RODNEY_HOME=$RODNEY_HOME rodney open '<url>'
-RODNEY_HOME=$RODNEY_HOME rodney waitstable
+rodney open '<url>' --home-dir <session>
+rodney waitstable --home-dir <session>
 ```
 
 **Interactive elements (tabs, "show more", expandable sections):**
 ```bash
-RODNEY_HOME=$RODNEY_HOME rodney click '<selector>'
-RODNEY_HOME=$RODNEY_HOME rodney waitstable
+rodney click '<selector>' --home-dir <session>
+rodney waitstable --home-dir <session>
 ```
 
 **Search boxes and filters:**
 ```bash
-RODNEY_HOME=$RODNEY_HOME rodney input '<selector>' '<query>'
-RODNEY_HOME=$RODNEY_HOME rodney click '<submit-button-selector>'
+rodney input '<selector>' '<query>' --home-dir <session>
+rodney click '<submit-button-selector>' --home-dir <session>
 # or
-RODNEY_HOME=$RODNEY_HOME rodney submit '<form-selector>'
-RODNEY_HOME=$RODNEY_HOME rodney waitstable
+rodney submit '<form-selector>' --home-dir <session>
+rodney waitstable --home-dir <session>
 ```
 
 **Filter dropdowns:**
 ```bash
-RODNEY_HOME=$RODNEY_HOME rodney select '<selector>' '<value>'
-RODNEY_HOME=$RODNEY_HOME rodney waitstable
+rodney select '<selector>' '<value>' --home-dir <session>
+rodney waitstable --home-dir <session>
 ```
 
 After following a lead, loop back to **Phase 2 (Extract)**.
@@ -180,7 +182,7 @@ After following a lead, loop back to **Phase 2 (Extract)**.
 
 - **Maximum 5 pages** deep from the starting URL (unless caller requests exhaustive exploration)
 - **Maximum 3 minutes** total wall time before reporting what was gathered
-- If a lead is irrelevant: `RODNEY_HOME=$RODNEY_HOME rodney back` and try the next one
+- If a lead is irrelevant: `rodney back --home-dir <session>` and try the next one
 
 ### Don't pursue
 
@@ -192,8 +194,8 @@ After following a lead, loop back to **Phase 2 (Extract)**.
 
 If page interactions are failing (clicks not registering, inputs not working, elements unresponsive), this may be caused by stealth mode breaking page functionality:
 
-1. `RODNEY_HOME=$RODNEY_HOME rodney stop`
-2. `RODNEY_HOME=$RODNEY_HOME rodney start` (without `--stealth`)
+1. `rodney stop --home-dir <session>`
+2. `rodney start --home-dir <session>` (without `--stealth`)
 3. Re-navigate to the last working URL
 4. Continue from Phase 2
 
@@ -208,15 +210,14 @@ If page interactions are failing (clicks not registering, inputs not working, el
 
 ### Cleanup
 
-**`--show` mode:** Leave rodney running. Report the `RODNEY_HOME` value so the caller can reuse the session for follow-ups:
+**`--show` mode:** Leave rodney running. Report the session path so the caller can reuse it for follow-ups:
 ```
-Browser left running. To reuse: RODNEY_HOME=<path>
+Browser left running. To reuse: --home-dir <session>
 ```
 
-**Headless mode:** Stop rodney and clean up:
+**Headless mode:** Stop rodney (automatically cleans up the session directory):
 ```bash
-RODNEY_HOME=$RODNEY_HOME rodney stop
-rm -rf "$RODNEY_HOME"
+rodney stop --home-dir <session>
 ```
 
 ## Flow Summary
@@ -242,7 +243,7 @@ Setup → Extract → Evaluate
 | Screenshots | `screenshot [file]`, `screenshot-el <sel> [file]` |
 | Tabs | `pages`, `page <idx>`, `newpage [url]`, `closepage` |
 
-**All commands must be prefixed with `RODNEY_HOME=$RODNEY_HOME`** to maintain session isolation.
+**All commands must end with `--home-dir <session>`** to maintain session isolation.
 
 ## Common Mistakes
 
@@ -250,9 +251,9 @@ Setup → Extract → Evaluate
 |---------|-----|
 | Screenshotting to "see what's there" | Use `rodney title` + `rodney js 'document.body.innerText.substring(0, 3000)'` first |
 | Polling with `rodney exists` in a loop (triggers permission prompts) | Use `rodney waitstable` or `sleep N` instead |
-| Forgetting `RODNEY_HOME` prefix | Every rodney command needs it for session isolation |
+| Forgetting `--home-dir` suffix | Every rodney command needs it for session isolation |
 | Over-pursuing when the goal is already met | Re-read the caller's goal before following another link |
-| Not cleaning up headless sessions | Always `rodney stop` + `rm -rf` in headless mode |
+| Not cleaning up headless sessions | Always `rodney stop --home-dir <session>` in headless mode |
 
 ## Red Flags
 
@@ -266,4 +267,4 @@ Setup → Extract → Evaluate
 - Try at least one DOM query before screenshotting
 - Include source URLs in the output
 - Note when screenshots were used and why
-- Create a fresh RODNEY_HOME unless caller provides one
+- Create a fresh session directory unless caller provides one

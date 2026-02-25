@@ -64,6 +64,7 @@ Accessibility:
 Options:
   --local                         Use directory-scoped session (./.rodney/)
   --global                        Use global session (~/.rodney/)
+  --home-dir <path>               Use specified directory for session data
   --version                       Print version and exit
   --help, -h, help                Show this help message
 

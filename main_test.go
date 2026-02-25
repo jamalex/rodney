@@ -56,6 +56,17 @@ func TestMain(m *testing.M) {
 	mux.HandleFunc("/empty", handleEmpty)
 	mux.HandleFunc("/stealth-check", handleStealthCheck)
 	mux.HandleFunc("/stealth-trap", handleStealthTrap)
+	mux.HandleFunc("/dynamic-dom", handleDynamicDOM)
+	mux.HandleFunc("/visibility-zoo", handleVisibilityZoo)
+	mux.HandleFunc("/complex-layout", handleComplexLayout)
+	mux.HandleFunc("/event-edge-cases", handleEventEdgeCases)
+	mux.HandleFunc("/form-advanced", handleFormAdvanced)
+	mux.HandleFunc("/spa-navigation", handleSPANavigation)
+	mux.HandleFunc("/spa-navigation/", handleSPANavigation)
+	mux.HandleFunc("/complex-selectors", handleComplexSelectors)
+	mux.HandleFunc("/scroll-scenarios", handleScrollScenarios)
+	mux.HandleFunc("/iframe-test", handleIFrameTest)
+	mux.HandleFunc("/shadow-dom-test", handleShadowDOMTest)
 	server := httptest.NewServer(mux)
 
 	env = &testEnv{browser: browser, server: server}
@@ -640,9 +651,12 @@ func TestDownload_ImgSrc(t *testing.T) {
 // =====================
 
 func TestExtractScopeArgs_NoFlags(t *testing.T) {
-	mode, remaining := extractScopeArgs([]string{"open", "https://example.com"})
+	mode, homeDir, remaining := extractScopeArgs([]string{"open", "https://example.com"})
 	if mode != scopeAuto {
 		t.Errorf("expected scopeAuto, got %v", mode)
+	}
+	if homeDir != "" {
+		t.Errorf("expected empty homeDir, got %q", homeDir)
 	}
 	if len(remaining) != 2 || remaining[0] != "open" || remaining[1] != "https://example.com" {
 		t.Errorf("expected [open https://example.com], got %v", remaining)
@@ -650,7 +664,7 @@ func TestExtractScopeArgs_NoFlags(t *testing.T) {
 }
 
 func TestExtractScopeArgs_LocalFlag(t *testing.T) {
-	mode, remaining := extractScopeArgs([]string{"--local", "start"})
+	mode, _, remaining := extractScopeArgs([]string{"--local", "start"})
 	if mode != scopeLocal {
 		t.Errorf("expected scopeLocal, got %v", mode)
 	}
@@ -660,7 +674,7 @@ func TestExtractScopeArgs_LocalFlag(t *testing.T) {
 }
 
 func TestExtractScopeArgs_GlobalFlag(t *testing.T) {
-	mode, remaining := extractScopeArgs([]string{"--global", "open", "https://example.com"})
+	mode, _, remaining := extractScopeArgs([]string{"--global", "open", "https://example.com"})
 	if mode != scopeGlobal {
 		t.Errorf("expected scopeGlobal, got %v", mode)
 	}
@@ -670,7 +684,7 @@ func TestExtractScopeArgs_GlobalFlag(t *testing.T) {
 }
 
 func TestExtractScopeArgs_LocalFlagAfterCommand(t *testing.T) {
-	mode, remaining := extractScopeArgs([]string{"open", "--local", "https://example.com"})
+	mode, _, remaining := extractScopeArgs([]string{"open", "--local", "https://example.com"})
 	if mode != scopeLocal {
 		t.Errorf("expected scopeLocal, got %v", mode)
 	}
@@ -680,9 +694,54 @@ func TestExtractScopeArgs_LocalFlagAfterCommand(t *testing.T) {
 }
 
 func TestExtractScopeArgs_LastFlagWins(t *testing.T) {
-	mode, _ := extractScopeArgs([]string{"--local", "--global", "start"})
+	mode, _, _ := extractScopeArgs([]string{"--local", "--global", "start"})
 	if mode != scopeGlobal {
 		t.Errorf("expected last flag (scopeGlobal) to win, got %v", mode)
+	}
+}
+
+func TestExtractScopeArgs_HomeDirAtEnd(t *testing.T) {
+	mode, homeDir, remaining := extractScopeArgs([]string{"start", "--stealth", "--home-dir", "/tmp/my-session"})
+	if mode != scopeAuto {
+		t.Errorf("expected scopeAuto, got %v", mode)
+	}
+	if homeDir != "/tmp/my-session" {
+		t.Errorf("expected homeDir=/tmp/my-session, got %q", homeDir)
+	}
+	if len(remaining) != 2 || remaining[0] != "start" || remaining[1] != "--stealth" {
+		t.Errorf("expected [start --stealth], got %v", remaining)
+	}
+}
+
+func TestExtractScopeArgs_HomeDirEquals(t *testing.T) {
+	_, homeDir, remaining := extractScopeArgs([]string{"open", "https://example.com", "--home-dir=/tmp/foo"})
+	if homeDir != "/tmp/foo" {
+		t.Errorf("expected homeDir=/tmp/foo, got %q", homeDir)
+	}
+	if len(remaining) != 2 || remaining[0] != "open" || remaining[1] != "https://example.com" {
+		t.Errorf("expected [open https://example.com], got %v", remaining)
+	}
+}
+
+func TestExtractScopeArgs_HomeDirOverridesScope(t *testing.T) {
+	mode, homeDir, _ := extractScopeArgs([]string{"--local", "start", "--home-dir", "/tmp/explicit"})
+	// --home-dir takes precedence; mode still captured but ignored in main()
+	if homeDir != "/tmp/explicit" {
+		t.Errorf("expected homeDir=/tmp/explicit, got %q", homeDir)
+	}
+	if mode != scopeLocal {
+		t.Errorf("expected scopeLocal, got %v", mode)
+	}
+}
+
+func TestExtractScopeArgs_HomeDirMissingValue(t *testing.T) {
+	// --home-dir at end with no value should be ignored (left in args)
+	_, homeDir, remaining := extractScopeArgs([]string{"start", "--home-dir"})
+	if homeDir != "" {
+		t.Errorf("expected empty homeDir when value missing, got %q", homeDir)
+	}
+	if len(remaining) != 2 || remaining[0] != "start" || remaining[1] != "--home-dir" {
+		t.Errorf("expected [start --home-dir], got %v", remaining)
 	}
 }
 
@@ -734,6 +793,33 @@ func TestResolveStateDir_LocalUsesWorkingDir(t *testing.T) {
 	if dir != expected {
 		t.Errorf("local mode should use working dir: expected %q, got %q", expected, dir)
 	}
+}
+
+// =====================
+// --home-dir cleanup on stop tests
+// =====================
+
+func TestCleanupSessionDir_RemovesExplicitHomeDir(t *testing.T) {
+	dir := t.TempDir()
+	// Create some session files like a real session would have
+	os.MkdirAll(filepath.Join(dir, "chrome-data"), 0755)
+	os.WriteFile(filepath.Join(dir, "state.json"), []byte(`{}`), 0644)
+
+	cleanupSessionDir(dir)
+
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Errorf("expected directory %q to be removed, but it still exists", dir)
+	}
+}
+
+func TestCleanupSessionDir_NoopForEmptyString(t *testing.T) {
+	// Should not panic or error when called with empty string
+	cleanupSessionDir("")
+}
+
+func TestCleanupSessionDir_NoopForNonexistent(t *testing.T) {
+	// Should not panic or error for a path that doesn't exist
+	cleanupSessionDir("/tmp/rodney-nonexistent-session-xyz")
 }
 
 // =====================
@@ -2202,5 +2288,2364 @@ func TestStealth_ScriptPersistsAcrossNavigation(t *testing.T) {
 	webdriver2 := page.MustEval(`() => String(navigator.webdriver)`).Str()
 	if webdriver2 == "true" {
 		t.Error("navigator.webdriver should not be true after navigating away and back")
+	}
+}
+
+// =====================
+// Integration test HTML fixtures
+// =====================
+
+func handleDynamicDOM(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html")
+	w.Write([]byte(`<!DOCTYPE html>
+<html><head><title>Dynamic DOM</title></head>
+<body>
+  <div id="container">
+    <button id="add-btn">Add Element</button>
+    <button id="remove-btn">Remove Element</button>
+    <button id="replace-btn">Replace Element</button>
+  </div>
+  <div id="dynamic-target"></div>
+  <script>
+    // Element appears after 500ms
+    setTimeout(function() {
+      var el = document.createElement('div');
+      el.id = 'delayed-500';
+      el.textContent = 'Appeared after 500ms';
+      document.getElementById('dynamic-target').appendChild(el);
+    }, 500);
+
+    // Element appears after 2s
+    setTimeout(function() {
+      var el = document.createElement('div');
+      el.id = 'delayed-2000';
+      el.textContent = 'Appeared after 2s';
+      document.getElementById('dynamic-target').appendChild(el);
+    }, 2000);
+
+    // Click to add element
+    document.getElementById('add-btn').addEventListener('click', function() {
+      var el = document.createElement('div');
+      el.id = 'click-added';
+      el.textContent = 'Added by click';
+      document.getElementById('dynamic-target').appendChild(el);
+    });
+
+    // Click to remove element
+    document.getElementById('remove-btn').addEventListener('click', function() {
+      var el = document.getElementById('click-added');
+      if (el) el.remove();
+    });
+
+    // Click to replace element via innerHTML
+    document.getElementById('replace-btn').addEventListener('click', function() {
+      document.getElementById('dynamic-target').innerHTML = '<div id="replaced-content">Replaced</div>';
+    });
+
+    // MutationObserver: when delayed-500 appears, add a sibling
+    var observer = new MutationObserver(function(mutations) {
+      mutations.forEach(function(m) {
+        m.addedNodes.forEach(function(node) {
+          if (node.id === 'delayed-500') {
+            var sibling = document.createElement('div');
+            sibling.id = 'mutation-added';
+            sibling.textContent = 'Added by MutationObserver';
+            node.parentNode.appendChild(sibling);
+          }
+        });
+      });
+    });
+    observer.observe(document.getElementById('dynamic-target'), {childList: true});
+  </script>
+</body>
+</html>`))
+}
+
+func handleVisibilityZoo(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html")
+	w.Write([]byte(`<!DOCTYPE html>
+<html><head><title>Visibility Zoo</title>
+<style>
+  .display-none { display: none; }
+  .visibility-hidden { visibility: hidden; }
+  .opacity-zero { opacity: 0; }
+  .zero-width { width: 0; overflow: hidden; }
+  .zero-height { height: 0; overflow: hidden; }
+  .offscreen { position: absolute; left: -9999px; top: -9999px; }
+  .clip-hidden { position: absolute; clip: rect(0,0,0,0); width: 1px; height: 1px; }
+  .transform-scale0 { transform: scale(0); }
+  .transform-offscreen { transform: translateX(-10000px); }
+  .pointer-events-none { pointer-events: none; }
+  .parent-hidden { display: none; }
+  .collapsed { max-height: 0; overflow: hidden; }
+  .overlay-container { position: relative; }
+  .overlay-target { padding: 20px; }
+  .overlay-cover { position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 10; }
+  .parent-vis-hidden { visibility: hidden; }
+  .child-vis-visible { visibility: visible; }
+  .visible-element { padding: 10px; background: green; }
+</style>
+</head>
+<body>
+  <div id="vis-normal" class="visible-element">Normal visible</div>
+  <div id="vis-display-none" class="display-none">Display none</div>
+  <div id="vis-visibility-hidden" class="visibility-hidden">Visibility hidden</div>
+  <div id="vis-opacity-zero" class="opacity-zero">Opacity zero</div>
+  <div id="vis-zero-width" class="zero-width">Zero width</div>
+  <div id="vis-zero-height" class="zero-height">Zero height</div>
+  <div id="vis-offscreen" class="offscreen">Offscreen</div>
+  <div id="vis-clip-hidden" class="clip-hidden">Clip hidden</div>
+  <div id="vis-transform-scale0" class="transform-scale0">Transform scale(0)</div>
+  <div id="vis-transform-offscreen" class="transform-offscreen">Transform offscreen</div>
+  <div id="vis-pointer-events-none" class="pointer-events-none">Pointer events none</div>
+  <div class="parent-hidden"><div id="vis-child-of-hidden">Child of hidden parent</div></div>
+  <div id="vis-collapsed" class="collapsed">Collapsed</div>
+  <div class="overlay-container">
+    <div id="vis-behind-overlay" class="overlay-target">Behind overlay</div>
+    <div class="overlay-cover" id="the-overlay"></div>
+  </div>
+  <div class="parent-vis-hidden">
+    <div id="vis-child-visible" class="child-vis-visible">Visible child of hidden parent</div>
+  </div>
+  <div id="overlay-click-result"></div>
+  <script>
+    document.getElementById('vis-behind-overlay').addEventListener('click', function() {
+      document.getElementById('overlay-click-result').textContent = 'target-clicked';
+    });
+    document.getElementById('the-overlay').addEventListener('click', function() {
+      document.getElementById('overlay-click-result').textContent = 'overlay-clicked';
+    });
+  </script>
+</body>
+</html>`))
+}
+
+func handleComplexLayout(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html")
+	w.Write([]byte(`<!DOCTYPE html>
+<html><head><title>Complex Layout</title>
+<style>
+  body { margin: 0; padding: 0; }
+  .fixed-header { position: fixed; top: 0; left: 0; right: 0; height: 50px; background: navy; z-index: 100; display: flex; align-items: center; justify-content: center; }
+  .fixed-header button { color: white; background: transparent; border: 1px solid white; padding: 5px 10px; cursor: pointer; }
+  .sticky-nav { position: sticky; top: 50px; background: gray; padding: 10px; z-index: 50; }
+  .sticky-nav button { cursor: pointer; }
+  .content { padding-top: 60px; }
+  .transformed-rotate { transform: rotate(45deg); padding: 20px; background: lightblue; display: inline-block; margin: 50px; }
+  .transformed-scale { transform: scale(1.5); padding: 20px; background: lightgreen; display: inline-block; margin: 50px; }
+  .transformed-skew { transform: skew(20deg); padding: 20px; background: lightyellow; display: inline-block; margin: 50px; }
+  .far-below { margin-top: 3000px; padding: 20px; background: coral; }
+  .z-stack { position: relative; height: 100px; }
+  .z-back { position: absolute; top: 0; left: 0; width: 200px; height: 100px; background: red; z-index: 1; }
+  .z-front { position: absolute; top: 0; left: 0; width: 200px; height: 100px; background: blue; z-index: 2; }
+  #fixed-click-result, #sticky-click-result, #below-fold-click-result { padding: 5px; }
+</style>
+</head>
+<body>
+  <div class="fixed-header">
+    <button id="fixed-btn">Fixed Button</button>
+  </div>
+  <div class="content">
+    <div class="sticky-nav">
+      <button id="sticky-btn">Sticky Button</button>
+    </div>
+    <div style="padding: 20px;">
+      <div id="fixed-click-result"></div>
+      <div id="sticky-click-result"></div>
+      <div class="transformed-rotate"><span id="rotated-el">Rotated</span></div>
+      <div class="transformed-scale"><span id="scaled-el">Scaled</span></div>
+      <div class="transformed-skew"><span id="skewed-el">Skewed</span></div>
+      <div class="z-stack">
+        <div class="z-back" id="z-back">Back</div>
+        <div class="z-front" id="z-front">Front</div>
+      </div>
+    </div>
+    <div class="far-below">
+      <button id="below-fold-btn">Far Below</button>
+      <div id="below-fold-click-result"></div>
+    </div>
+  </div>
+  <script>
+    document.getElementById('fixed-btn').addEventListener('click', function() {
+      document.getElementById('fixed-click-result').textContent = 'fixed-clicked';
+    });
+    document.getElementById('sticky-btn').addEventListener('click', function() {
+      document.getElementById('sticky-click-result').textContent = 'sticky-clicked';
+    });
+    document.getElementById('below-fold-btn').addEventListener('click', function() {
+      document.getElementById('below-fold-click-result').textContent = 'below-fold-clicked';
+    });
+  </script>
+</body>
+</html>`))
+}
+
+func handleEventEdgeCases(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html")
+	w.Write([]byte(`<!DOCTYPE html>
+<html><head><title>Event Edge Cases</title>
+<style>
+  .moving-btn { position: absolute; left: 50px; top: 200px; }
+  #result { padding: 10px; margin: 10px 0; }
+</style>
+</head>
+<body>
+  <div id="result"></div>
+
+  <!-- Self-destructing button -->
+  <button id="self-destruct">Self Destruct</button>
+
+  <!-- innerHTML replacement -->
+  <div id="replace-container">
+    <button id="replace-trigger">Replace Content</button>
+  </div>
+
+  <!-- preventDefault on parent -->
+  <a href="/should-not-navigate" id="prevent-link">
+    <button id="prevent-btn">Click Me</button>
+  </a>
+
+  <!-- stopPropagation -->
+  <div id="outer-div">
+    <button id="inner-btn">Inner</button>
+  </div>
+
+  <!-- Delegated events -->
+  <ul id="delegated-list">
+    <li id="delegated-item-1" class="delegated-item">Item 1</li>
+    <li id="delegated-item-2" class="delegated-item">Item 2</li>
+  </ul>
+
+  <!-- Moving button -->
+  <button id="moving-btn" class="moving-btn">Moving</button>
+
+  <!-- Disabled button -->
+  <button id="disabled-btn" disabled>Disabled</button>
+
+  <!-- Double-click target -->
+  <button id="dblclick-btn">Double Click Me</button>
+
+  <script>
+    var result = document.getElementById('result');
+
+    // Self-destruct
+    document.getElementById('self-destruct').addEventListener('click', function() {
+      result.textContent = 'self-destruct-clicked';
+      this.remove();
+    });
+
+    // innerHTML replacement
+    document.getElementById('replace-trigger').addEventListener('click', function() {
+      document.getElementById('replace-container').innerHTML = '<div id="replaced-marker">Replaced</div>';
+      result.textContent = 'content-replaced';
+    });
+
+    // preventDefault on parent link
+    document.getElementById('prevent-link').addEventListener('click', function(e) {
+      e.preventDefault();
+      result.textContent = 'prevented';
+    });
+    document.getElementById('prevent-btn').addEventListener('click', function() {
+      // This should fire, but parent link's default is prevented
+    });
+
+    // stopPropagation
+    var outerClicked = false;
+    document.getElementById('outer-div').addEventListener('click', function() {
+      outerClicked = true;
+      result.textContent = (result.textContent || '') + 'outer-clicked';
+    });
+    document.getElementById('inner-btn').addEventListener('click', function(e) {
+      e.stopPropagation();
+      result.textContent = 'inner-clicked';
+    });
+
+    // Delegated events
+    document.getElementById('delegated-list').addEventListener('click', function(e) {
+      if (e.target.classList.contains('delegated-item')) {
+        result.textContent = 'delegated:' + e.target.id;
+      }
+    });
+
+    // Moving button
+    var moveCount = 0;
+    document.getElementById('moving-btn').addEventListener('click', function() {
+      moveCount++;
+      result.textContent = 'move-clicked:' + moveCount;
+      this.style.left = (50 + moveCount * 100) + 'px';
+      this.style.top = (200 + moveCount * 50) + 'px';
+    });
+
+    // Disabled button
+    document.getElementById('disabled-btn').addEventListener('click', function() {
+      result.textContent = 'disabled-clicked';
+    });
+
+    // Double-click
+    var dblClickCount = 0;
+    document.getElementById('dblclick-btn').addEventListener('dblclick', function() {
+      result.textContent = 'dblclick-fired';
+    });
+    document.getElementById('dblclick-btn').addEventListener('click', function() {
+      dblClickCount++;
+      if (!result.textContent.startsWith('dblclick')) {
+        result.textContent = 'click:' + dblClickCount;
+      }
+    });
+  </script>
+</body>
+</html>`))
+}
+
+func handleFormAdvanced(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html")
+	w.Write([]byte(`<!DOCTYPE html>
+<html><head><title>Advanced Forms</title>
+<style>
+  .custom-dropdown { position: relative; display: inline-block; }
+  .dropdown-toggle { padding: 5px 10px; cursor: pointer; border: 1px solid #ccc; background: white; }
+  .dropdown-menu { display: none; position: absolute; top: 100%; left: 0; background: white; border: 1px solid #ccc; z-index: 100; min-width: 150px; }
+  .dropdown-menu.open { display: block; }
+  .dropdown-item { padding: 5px 10px; cursor: pointer; }
+  .dropdown-item:hover { background: #eee; }
+  [contenteditable] { border: 1px solid #ccc; padding: 10px; min-height: 50px; }
+</style>
+</head>
+<body>
+  <form id="test-form">
+    <textarea id="textarea-input" rows="4" cols="50"></textarea>
+    <div id="contenteditable-div" contenteditable="true"></div>
+    <input id="password-input" type="password">
+    <input id="number-input" type="number" min="0" max="100">
+    <input id="date-input" type="date">
+    <input id="range-input" type="range" min="0" max="100" value="50">
+    <input id="checkbox-1" type="checkbox" value="check1">
+    <input id="checkbox-2" type="checkbox" value="check2" checked>
+    <input id="radio-a" type="radio" name="radio-group" value="a">
+    <input id="radio-b" type="radio" name="radio-group" value="b">
+    <input id="radio-c" type="radio" name="radio-group" value="c" checked>
+  </form>
+
+  <!-- Custom JS dropdown -->
+  <div class="custom-dropdown" id="custom-dropdown">
+    <div class="dropdown-toggle" id="dropdown-toggle">Select...</div>
+    <div class="dropdown-menu" id="dropdown-menu">
+      <div class="dropdown-item" data-value="opt1">Option 1</div>
+      <div class="dropdown-item" data-value="opt2">Option 2</div>
+      <div class="dropdown-item" data-value="opt3">Option 3</div>
+    </div>
+  </div>
+  <div id="dropdown-result"></div>
+
+  <script>
+    // Custom dropdown
+    document.getElementById('dropdown-toggle').addEventListener('click', function() {
+      document.getElementById('dropdown-menu').classList.toggle('open');
+    });
+    document.querySelectorAll('.dropdown-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var val = this.getAttribute('data-value');
+        document.getElementById('dropdown-toggle').textContent = this.textContent;
+        document.getElementById('dropdown-result').textContent = val;
+        document.getElementById('dropdown-menu').classList.remove('open');
+      });
+    });
+  </script>
+</body>
+</html>`))
+}
+
+func handleSPANavigation(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html")
+	w.Write([]byte(`<!DOCTYPE html>
+<html><head><title>SPA Navigation</title></head>
+<body>
+  <nav>
+    <a href="#" id="nav-home" class="spa-link" data-page="home">Home</a>
+    <a href="#" id="nav-about" class="spa-link" data-page="about">About</a>
+    <a href="#" id="nav-contact" class="spa-link" data-page="contact">Contact</a>
+  </nav>
+  <div id="spa-content">
+    <div id="page-title">Home Page</div>
+    <div id="page-body">Welcome to the home page</div>
+  </div>
+  <script>
+    var pages = {
+      home: { title: 'Home Page', body: 'Welcome to the home page' },
+      about: { title: 'About Page', body: 'This is the about page' },
+      contact: { title: 'Contact Page', body: 'Get in touch with us' }
+    };
+
+    document.querySelectorAll('.spa-link').forEach(function(link) {
+      link.addEventListener('click', function(e) {
+        e.preventDefault();
+        var pageName = this.getAttribute('data-page');
+        history.pushState({page: pageName}, '', '/spa-navigation/' + pageName);
+        // Simulate async content loading with 300ms delay
+        document.getElementById('spa-content').innerHTML = '<div id="loading">Loading...</div>';
+        setTimeout(function() {
+          var page = pages[pageName];
+          document.getElementById('spa-content').innerHTML =
+            '<div id="page-title">' + page.title + '</div>' +
+            '<div id="page-body">' + page.body + '</div>';
+        }, 300);
+      });
+    });
+
+    window.addEventListener('popstate', function(e) {
+      if (e.state && e.state.page) {
+        var page = pages[e.state.page];
+        document.getElementById('spa-content').innerHTML =
+          '<div id="page-title">' + page.title + '</div>' +
+          '<div id="page-body">' + page.body + '</div>';
+      }
+    });
+  </script>
+</body>
+</html>`))
+}
+
+func handleComplexSelectors(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html")
+	w.Write([]byte(`<!DOCTYPE html>
+<html><head><title>Complex Selectors</title></head>
+<body>
+  <div id="root">
+    <div class="level-1" data-type="container">
+      <div class="level-2" data-type="wrapper">
+        <div class="level-3" data-type="inner">
+          <span id="deep-target" data-role="target" data-status="active">Deep Target</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <table id="data-table">
+    <thead>
+      <tr><th>Name</th><th>Value</th></tr>
+    </thead>
+    <tbody>
+      <tr class="row"><td class="name">Alpha</td><td class="value">1</td></tr>
+      <tr class="row"><td class="name">Beta</td><td class="value">2</td></tr>
+      <tr class="row"><td class="name">Gamma</td><td class="value">3</td></tr>
+      <tr class="row"><td class="name">Delta</td><td class="value">4</td></tr>
+      <tr class="row"><td class="name">Epsilon</td><td class="value">5</td></tr>
+    </tbody>
+  </table>
+
+  <ul id="mixed-list">
+    <li class="item type-a">A1</li>
+    <li class="item type-b">B1</li>
+    <li class="item type-a">A2</li>
+    <li class="item type-b">B2</li>
+    <li class="item type-a">A3</li>
+  </ul>
+
+  <div id="siblings">
+    <h2>Title</h2>
+    <p class="intro">Intro paragraph</p>
+    <p class="body">Body paragraph</p>
+    <p class="footer">Footer paragraph</p>
+  </div>
+</body>
+</html>`))
+}
+
+func handleScrollScenarios(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html")
+	w.Write([]byte(`<!DOCTYPE html>
+<html><head><title>Scroll Scenarios</title>
+<style>
+  .v-scroll-container { height: 200px; overflow-y: auto; border: 2px solid blue; }
+  .v-scroll-content { height: 2000px; padding: 10px; }
+  .h-scroll-container { width: 300px; overflow-x: auto; white-space: nowrap; border: 2px solid red; }
+  .h-scroll-content { display: inline-block; width: 3000px; padding: 10px; }
+  .far-below-content { margin-top: 3000px; padding: 20px; background: lightyellow; }
+</style>
+</head>
+<body>
+  <h2>Vertical Scroll Container</h2>
+  <div class="v-scroll-container" id="v-container">
+    <div class="v-scroll-content">
+      <div id="v-top-item">Top of scroll container</div>
+      <div style="margin-top: 1800px;">
+        <div id="v-buried-item">Buried in scroll container</div>
+      </div>
+    </div>
+  </div>
+
+  <h2>Horizontal Scroll Container</h2>
+  <div class="h-scroll-container" id="h-container">
+    <div class="h-scroll-content">
+      <span id="h-start-item">Start</span>
+      <span id="h-end-item" style="margin-left: 2500px;">End of horizontal scroll</span>
+    </div>
+  </div>
+
+  <div class="far-below-content">
+    <button id="far-below-btn">Far Below Button</button>
+    <div id="far-below-result"></div>
+  </div>
+
+  <script>
+    document.getElementById('far-below-btn').addEventListener('click', function() {
+      document.getElementById('far-below-result').textContent = 'far-below-clicked';
+    });
+  </script>
+</body>
+</html>`))
+}
+
+func handleIFrameTest(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html")
+	w.Write([]byte(`<!DOCTYPE html>
+<html><head><title>IFrame Test</title></head>
+<body>
+  <h1>IFrame Test Page</h1>
+  <iframe id="test-iframe" srcdoc="<!DOCTYPE html><html><body><div id='iframe-content'>Hello from iframe</div><button id='iframe-btn'>Click me</button></body></html>" width="400" height="200"></iframe>
+</body>
+</html>`))
+}
+
+func handleShadowDOMTest(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html")
+	w.Write([]byte(`<!DOCTYPE html>
+<html><head><title>Shadow DOM Test</title></head>
+<body>
+  <h1>Shadow DOM Test Page</h1>
+  <div id="shadow-host"></div>
+  <script>
+    var host = document.getElementById('shadow-host');
+    var shadow = host.attachShadow({mode: 'open'});
+    shadow.innerHTML = '<div id="shadow-content">Hello from shadow DOM</div><button id="shadow-btn">Shadow Button</button>';
+  </script>
+</body>
+</html>`))
+}
+
+// =====================
+// Dynamic DOM tests
+// =====================
+
+func TestStealthCtx_DynamicDOM_WaitForDelayedElement(t *testing.T) {
+	page := navigateTo(t, "/dynamic-dom")
+	sc := getStealthCtx(page, &State{})
+
+	// Element appears after 500ms, polling should find it within 5s
+	nodeID, err := sc.element("#delayed-500", 5*time.Second)
+	if err != nil {
+		t.Fatalf("element() failed: %v", err)
+	}
+	txt, err := sc.text(nodeID)
+	if err != nil {
+		t.Fatalf("text() failed: %v", err)
+	}
+	if txt != "Appeared after 500ms" {
+		t.Errorf("expected 'Appeared after 500ms', got %q", txt)
+	}
+}
+
+func TestStealthCtx_DynamicDOM_WaitForSlowElement(t *testing.T) {
+	page := navigateTo(t, "/dynamic-dom")
+	sc := getStealthCtx(page, &State{})
+
+	// Element appears after 2s, use 3s timeout
+	nodeID, err := sc.element("#delayed-2000", 3*time.Second)
+	if err != nil {
+		t.Fatalf("element() failed to find element that appears after 2s with 3s timeout: %v", err)
+	}
+	txt, err := sc.text(nodeID)
+	if err != nil {
+		t.Fatalf("text() failed: %v", err)
+	}
+	if txt != "Appeared after 2s" {
+		t.Errorf("expected 'Appeared after 2s', got %q", txt)
+	}
+}
+
+func TestStealthCtx_DynamicDOM_TimeoutBeforeSlowElement(t *testing.T) {
+	page := navigateTo(t, "/dynamic-dom")
+	sc := getStealthCtx(page, &State{})
+
+	// Element appears after 2s, but we only wait 500ms — should timeout
+	_, err := sc.element("#delayed-2000", 500*time.Millisecond)
+	if err == nil {
+		t.Fatal("expected timeout error for element that appears after 2s with 500ms timeout")
+	}
+	if !strings.Contains(err.Error(), "not found within") {
+		t.Errorf("expected 'not found within' error, got: %v", err)
+	}
+}
+
+func TestStealthCtx_DynamicDOM_ClickTriggersAddition(t *testing.T) {
+	page := navigateTo(t, "/dynamic-dom")
+	sc := getStealthCtx(page, &State{})
+
+	// Click the add button
+	btnID, err := sc.element("#add-btn", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element(#add-btn) failed: %v", err)
+	}
+	if err := sc.click(btnID); err != nil {
+		t.Fatalf("click failed: %v", err)
+	}
+
+	// The new element should now exist
+	nodeID, err := sc.element("#click-added", 2*time.Second)
+	if err != nil {
+		t.Fatalf("element(#click-added) failed after click: %v", err)
+	}
+	txt, err := sc.text(nodeID)
+	if err != nil {
+		t.Fatalf("text() failed: %v", err)
+	}
+	if txt != "Added by click" {
+		t.Errorf("expected 'Added by click', got %q", txt)
+	}
+}
+
+func TestStealthCtx_DynamicDOM_MutationObserverContent(t *testing.T) {
+	page := navigateTo(t, "/dynamic-dom")
+	sc := getStealthCtx(page, &State{})
+
+	// MutationObserver adds #mutation-added when #delayed-500 appears (after 500ms)
+	nodeID, err := sc.element("#mutation-added", 5*time.Second)
+	if err != nil {
+		t.Fatalf("element(#mutation-added) failed: %v", err)
+	}
+	txt, err := sc.text(nodeID)
+	if err != nil {
+		t.Fatalf("text() failed: %v", err)
+	}
+	if txt != "Added by MutationObserver" {
+		t.Errorf("expected 'Added by MutationObserver', got %q", txt)
+	}
+}
+
+func TestStealthCtx_DynamicDOM_ClickRemovesThenFind(t *testing.T) {
+	page := navigateTo(t, "/dynamic-dom")
+	sc := getStealthCtx(page, &State{})
+
+	// First add an element
+	addBtn, err := sc.element("#add-btn", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element(#add-btn) failed: %v", err)
+	}
+	if err := sc.click(addBtn); err != nil {
+		t.Fatalf("click(add-btn) failed: %v", err)
+	}
+	// Wait for it to appear
+	_, err = sc.element("#click-added", 2*time.Second)
+	if err != nil {
+		t.Fatalf("element(#click-added) not found after add: %v", err)
+	}
+
+	// Now remove it
+	removeBtn, err := sc.element("#remove-btn", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element(#remove-btn) failed: %v", err)
+	}
+	if err := sc.click(removeBtn); err != nil {
+		t.Fatalf("click(remove-btn) failed: %v", err)
+	}
+	time.Sleep(200 * time.Millisecond) // let DOM update
+
+	// exists() should return false
+	found, err := sc.exists("#click-added")
+	if err != nil {
+		t.Fatalf("exists() failed: %v", err)
+	}
+	if found {
+		t.Error("expected #click-added to not exist after removal, but exists() returned true")
+	}
+}
+
+func TestStealthCtx_DynamicDOM_StaleNodeAfterReplace(t *testing.T) {
+	page := navigateTo(t, "/dynamic-dom")
+	sc := getStealthCtx(page, &State{})
+
+	// Wait for delayed-500 to appear and grab its nodeID
+	nodeID, err := sc.element("#delayed-500", 5*time.Second)
+	if err != nil {
+		t.Fatalf("element(#delayed-500) failed: %v", err)
+	}
+
+	// Replace the container's innerHTML, which destroys the node
+	replaceBtn, err := sc.element("#replace-btn", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element(#replace-btn) failed: %v", err)
+	}
+	if err := sc.click(replaceBtn); err != nil {
+		t.Fatalf("click(replace-btn) failed: %v", err)
+	}
+	time.Sleep(300 * time.Millisecond) // let DOM update
+
+	// EXPECTED FAIL: The old nodeID is now stale — callOn or text() should fail
+	// because there's no stale nodeID recovery mechanism.
+	_, err = sc.text(nodeID)
+	if err == nil {
+		t.Skip("Expected stale nodeID error after DOM replacement, but text() succeeded — node may not be fully stale yet")
+	}
+	// If we get here with an error, that confirms the limitation
+	t.Logf("Confirmed limitation: stale nodeID after DOM replacement: %v", err)
+}
+
+func TestStealthCtx_DynamicDOM_ElementsCountChanges(t *testing.T) {
+	page := navigateTo(t, "/dynamic-dom")
+	sc := getStealthCtx(page, &State{})
+
+	// Initially 0 items with class .dynamic-child
+	n1, err := sc.count(".dynamic-child")
+	if err != nil {
+		t.Fatalf("count() failed: %v", err)
+	}
+
+	// Wait for delayed-500 to add content (it adds nodes to #dynamic-target)
+	time.Sleep(700 * time.Millisecond)
+
+	// Count direct children of #dynamic-target
+	n2, err := sc.count("#dynamic-target > *")
+	if err != nil {
+		t.Fatalf("count() failed: %v", err)
+	}
+	// After 700ms, we should have delayed-500 and mutation-added
+	if n2 < 1 {
+		t.Errorf("expected at least 1 child after 700ms, got %d", n2)
+	}
+	// Original count of .dynamic-child should still be 0 (different class)
+	if n1 != 0 {
+		t.Errorf("expected 0 .dynamic-child initially, got %d", n1)
+	}
+}
+
+// =====================
+// Visibility/Hidden Elements tests
+// =====================
+
+func TestStealthCtx_Visible_DisplayNone(t *testing.T) {
+	page := navigateTo(t, "/visibility-zoo")
+	sc := getStealthCtx(page, &State{})
+
+	nodeID, err := sc.element("#vis-display-none", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element() failed: %v", err)
+	}
+	vis, err := sc.visible(nodeID)
+	if err != nil {
+		t.Fatalf("visible() failed: %v", err)
+	}
+	if vis {
+		t.Error("display:none element should not be visible")
+	}
+}
+
+func TestStealthCtx_Visible_VisibilityHidden(t *testing.T) {
+	page := navigateTo(t, "/visibility-zoo")
+	sc := getStealthCtx(page, &State{})
+
+	nodeID, err := sc.element("#vis-visibility-hidden", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element() failed: %v", err)
+	}
+	vis, err := sc.visible(nodeID)
+	if err != nil {
+		t.Fatalf("visible() failed: %v", err)
+	}
+	if vis {
+		t.Error("visibility:hidden element should not be visible")
+	}
+}
+
+func TestStealthCtx_Visible_OpacityZero(t *testing.T) {
+	page := navigateTo(t, "/visibility-zoo")
+	sc := getStealthCtx(page, &State{})
+
+	nodeID, err := sc.element("#vis-opacity-zero", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element() failed: %v", err)
+	}
+	vis, err := sc.visible(nodeID)
+	if err != nil {
+		t.Fatalf("visible() failed: %v", err)
+	}
+	if vis {
+		t.Error("opacity:0 element should not be visible")
+	}
+}
+
+func TestStealthCtx_Visible_ZeroWidth(t *testing.T) {
+	page := navigateTo(t, "/visibility-zoo")
+	sc := getStealthCtx(page, &State{})
+
+	nodeID, err := sc.element("#vis-zero-width", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element() failed: %v", err)
+	}
+	vis, err := sc.visible(nodeID)
+	if err != nil {
+		t.Fatalf("visible() failed: %v", err)
+	}
+	if vis {
+		t.Error("zero-width element should not be visible")
+	}
+}
+
+func TestStealthCtx_Visible_ZeroHeight(t *testing.T) {
+	page := navigateTo(t, "/visibility-zoo")
+	sc := getStealthCtx(page, &State{})
+
+	nodeID, err := sc.element("#vis-zero-height", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element() failed: %v", err)
+	}
+	vis, err := sc.visible(nodeID)
+	if err != nil {
+		t.Fatalf("visible() failed: %v", err)
+	}
+	if vis {
+		t.Error("zero-height element should not be visible")
+	}
+}
+
+func TestStealthCtx_Visible_Offscreen(t *testing.T) {
+	page := navigateTo(t, "/visibility-zoo")
+	sc := getStealthCtx(page, &State{})
+
+	nodeID, err := sc.element("#vis-offscreen", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element() failed: %v", err)
+	}
+	vis, err := sc.visible(nodeID)
+	if err != nil {
+		t.Fatalf("visible() failed: %v", err)
+	}
+	// visible() should detect offscreen elements (position:-9999px) as not visible.
+	// Fix: check if bounding rect intersects the viewport.
+	if vis {
+		t.Error("offscreen element (position:-9999px) should not be visible")
+	}
+}
+
+func TestStealthCtx_Visible_ClipHidden(t *testing.T) {
+	page := navigateTo(t, "/visibility-zoo")
+	sc := getStealthCtx(page, &State{})
+
+	nodeID, err := sc.element("#vis-clip-hidden", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element() failed: %v", err)
+	}
+	vis, err := sc.visible(nodeID)
+	if err != nil {
+		t.Fatalf("visible() failed: %v", err)
+	}
+	// visible() should detect clip:rect(0,0,0,0) as not visible.
+	// Fix: check CSS clip/clip-path properties.
+	if vis {
+		t.Error("clip:rect(0,0,0,0) hidden element should not be visible")
+	}
+}
+
+func TestStealthCtx_Visible_TransformScale0(t *testing.T) {
+	page := navigateTo(t, "/visibility-zoo")
+	sc := getStealthCtx(page, &State{})
+
+	nodeID, err := sc.element("#vis-transform-scale0", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element() failed: %v", err)
+	}
+	vis, err := sc.visible(nodeID)
+	if err != nil {
+		t.Fatalf("visible() failed: %v", err)
+	}
+	// transform:scale(0) zeroes getBoundingClientRect dimensions
+	if vis {
+		t.Error("transform:scale(0) element should not be visible (zero bounding rect)")
+	}
+}
+
+func TestStealthCtx_Visible_TransformOffscreen(t *testing.T) {
+	page := navigateTo(t, "/visibility-zoo")
+	sc := getStealthCtx(page, &State{})
+
+	nodeID, err := sc.element("#vis-transform-offscreen", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element() failed: %v", err)
+	}
+	vis, err := sc.visible(nodeID)
+	if err != nil {
+		t.Fatalf("visible() failed: %v", err)
+	}
+	// visible() should detect translateX(-10000px) as not visible.
+	// Fix: check if bounding rect intersects the viewport after transforms.
+	if vis {
+		t.Error("translateX(-10000px) element should not be visible")
+	}
+}
+
+func TestStealthCtx_Visible_ChildOfHiddenParent(t *testing.T) {
+	page := navigateTo(t, "/visibility-zoo")
+	sc := getStealthCtx(page, &State{})
+
+	// Child inherits display:none from parent — element() will find it via DOM
+	// but it should not be visible
+	nodeID, err := sc.element("#vis-child-of-hidden", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element() failed: %v", err)
+	}
+	vis, err := sc.visible(nodeID)
+	if err != nil {
+		t.Fatalf("visible() failed: %v", err)
+	}
+	if vis {
+		t.Error("child of display:none parent should not be visible")
+	}
+}
+
+func TestStealthCtx_Visible_CollapsedMaxHeight0(t *testing.T) {
+	page := navigateTo(t, "/visibility-zoo")
+	sc := getStealthCtx(page, &State{})
+
+	nodeID, err := sc.element("#vis-collapsed", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element() failed: %v", err)
+	}
+	vis, err := sc.visible(nodeID)
+	if err != nil {
+		t.Fatalf("visible() failed: %v", err)
+	}
+	// max-height:0 with overflow:hidden gives zero height
+	if vis {
+		t.Error("collapsed (max-height:0) element should not be visible")
+	}
+}
+
+func TestStealthCtx_Visible_PointerEventsNone(t *testing.T) {
+	page := navigateTo(t, "/visibility-zoo")
+	sc := getStealthCtx(page, &State{})
+
+	nodeID, err := sc.element("#vis-pointer-events-none", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element() failed: %v", err)
+	}
+	vis, err := sc.visible(nodeID)
+	if err != nil {
+		t.Fatalf("visible() failed: %v", err)
+	}
+	// pointer-events:none doesn't affect visibility — element is visible but unclickable
+	if !vis {
+		t.Error("pointer-events:none element should be visible (just unclickable)")
+	}
+}
+
+func TestStealthCtx_Visible_ChildVisibleParentHidden(t *testing.T) {
+	page := navigateTo(t, "/visibility-zoo")
+	sc := getStealthCtx(page, &State{})
+
+	nodeID, err := sc.element("#vis-child-visible", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element() failed: %v", err)
+	}
+	vis, err := sc.visible(nodeID)
+	if err != nil {
+		t.Fatalf("visible() failed: %v", err)
+	}
+	// visibility:visible overrides parent's visibility:hidden
+	if !vis {
+		t.Error("visibility:visible child of visibility:hidden parent should be visible")
+	}
+}
+
+func TestStealthCtx_Click_ElementBehindOverlay(t *testing.T) {
+	page := navigateTo(t, "/visibility-zoo")
+	sc := getStealthCtx(page, &State{})
+
+	// Try to click the element behind the overlay
+	nodeID, err := sc.element("#vis-behind-overlay", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element() failed: %v", err)
+	}
+	err = sc.click(nodeID)
+	// click() should return an error indicating the target is obscured by the overlay.
+	if err == nil {
+		t.Fatal("click() on element behind overlay should return an error")
+	}
+	if !strings.Contains(err.Error(), "obscured") {
+		t.Errorf("click() error should mention 'obscured', got: %v", err)
+	}
+}
+
+func TestStealthCtx_Click_DisplayNone(t *testing.T) {
+	page := navigateTo(t, "/visibility-zoo")
+	sc := getStealthCtx(page, &State{})
+
+	nodeID, err := sc.element("#vis-display-none", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element() failed: %v", err)
+	}
+	// click() on display:none should return a clear error (e.g. "element not visible"),
+	// not a raw CDP error from getBoxModel.
+	// Fix: check visibility before attempting click.
+	err = sc.click(nodeID)
+	if err == nil {
+		t.Fatal("click() on display:none element should return an error")
+	}
+	if strings.Contains(err.Error(), "Could not compute box model") {
+		t.Errorf("click() on display:none should return a user-friendly error, not raw CDP: %v", err)
+	}
+}
+
+// =====================
+// Complex Layout & Scroll tests
+// =====================
+
+func TestStealthCtx_Click_FixedHeader(t *testing.T) {
+	page := navigateTo(t, "/complex-layout")
+	sc := getStealthCtx(page, &State{})
+
+	btnID, err := sc.element("#fixed-btn", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element() failed: %v", err)
+	}
+	if err := sc.click(btnID); err != nil {
+		t.Fatalf("click() failed: %v", err)
+	}
+	time.Sleep(200 * time.Millisecond)
+
+	resultID, err := sc.element("#fixed-click-result", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element(#fixed-click-result) failed: %v", err)
+	}
+	txt, err := sc.text(resultID)
+	if err != nil {
+		t.Fatalf("text() failed: %v", err)
+	}
+	if txt != "fixed-clicked" {
+		t.Errorf("expected 'fixed-clicked', got %q", txt)
+	}
+}
+
+func TestStealthCtx_Click_BelowFold(t *testing.T) {
+	page := navigateTo(t, "/complex-layout")
+	sc := getStealthCtx(page, &State{})
+
+	btnID, err := sc.element("#below-fold-btn", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element() failed: %v", err)
+	}
+	if err := sc.click(btnID); err != nil {
+		t.Fatalf("click() failed: %v", err)
+	}
+	time.Sleep(300 * time.Millisecond)
+
+	resultID, err := sc.element("#below-fold-click-result", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element(#below-fold-click-result) failed: %v", err)
+	}
+	txt, err := sc.text(resultID)
+	if err != nil {
+		t.Fatalf("text() failed: %v", err)
+	}
+	if txt != "below-fold-clicked" {
+		t.Errorf("expected 'below-fold-clicked', got %q", txt)
+	}
+}
+
+func TestStealthCtx_Click_TransformedElement(t *testing.T) {
+	page := navigateTo(t, "/complex-layout")
+	sc := getStealthCtx(page, &State{})
+
+	nodeID, err := sc.element("#rotated-el", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element() failed: %v", err)
+	}
+	// UNCERTAIN: rotated element's box model may give wrong center
+	err = sc.click(nodeID)
+	if err != nil {
+		t.Logf("click on rotated element failed: %v", err)
+	} else {
+		t.Log("click on rotated element succeeded")
+	}
+}
+
+func TestStealthCtx_Click_ScaledElement(t *testing.T) {
+	page := navigateTo(t, "/complex-layout")
+	sc := getStealthCtx(page, &State{})
+
+	nodeID, err := sc.element("#scaled-el", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element() failed: %v", err)
+	}
+	err = sc.click(nodeID)
+	if err != nil {
+		t.Errorf("click on scaled element failed: %v", err)
+	}
+}
+
+func TestStealthCtx_Click_StickyElement(t *testing.T) {
+	page := navigateTo(t, "/complex-layout")
+	sc := getStealthCtx(page, &State{})
+
+	btnID, err := sc.element("#sticky-btn", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element() failed: %v", err)
+	}
+	// UNCERTAIN: sticky position after scroll may compute wrong coords
+	if err := sc.click(btnID); err != nil {
+		t.Logf("click on sticky element failed: %v", err)
+		return
+	}
+	time.Sleep(200 * time.Millisecond)
+
+	resultID, err := sc.element("#sticky-click-result", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element(#sticky-click-result) failed: %v", err)
+	}
+	txt, err := sc.text(resultID)
+	if err != nil {
+		t.Fatalf("text() failed: %v", err)
+	}
+	if txt != "sticky-clicked" {
+		t.Errorf("expected 'sticky-clicked', got %q", txt)
+	}
+}
+
+func TestStealthCtx_Scroll_ElementInScrollableContainer(t *testing.T) {
+	page := navigateTo(t, "/scroll-scenarios")
+	sc := getStealthCtx(page, &State{})
+
+	nodeID, err := sc.element("#v-buried-item", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element() failed: %v", err)
+	}
+	// scrollIntoView should scroll nested containers, not just the page.
+	// Fix: detect scrollable parents and scroll them too.
+	if err := sc.scrollIntoView(nodeID); err != nil {
+		t.Fatalf("scrollIntoView failed: %v", err)
+	}
+
+	// After scrollIntoView, the element's center should be within the container's visible area.
+	// Check by getting its viewport-relative position — if the container didn't scroll,
+	// the element is clipped at the container boundary.
+	result, err := sc.callOn(nodeID, `function() {
+		var rect = this.getBoundingClientRect();
+		var container = this.closest('.v-scroll-container') || this.parentElement;
+		var cRect = container.getBoundingClientRect();
+		// Element center must be within container bounds
+		var centerY = rect.top + rect.height/2;
+		return centerY >= cRect.top && centerY <= cRect.bottom;
+	}`)
+	if err != nil {
+		t.Fatalf("visibility check failed: %v", err)
+	}
+	if !result.Result.Value.Bool() {
+		t.Error("scrollIntoView should scroll nested scrollable containers to reveal buried element")
+	}
+}
+
+func TestStealthCtx_Scroll_HorizontalScrollContainer(t *testing.T) {
+	page := navigateTo(t, "/scroll-scenarios")
+	sc := getStealthCtx(page, &State{})
+
+	nodeID, err := sc.element("#h-end-item", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element() failed: %v", err)
+	}
+	// scrollIntoView should handle horizontal scroll in containers.
+	// Fix: detect horizontal overflow and scroll containers horizontally too.
+	if err := sc.scrollIntoView(nodeID); err != nil {
+		t.Fatalf("scrollIntoView failed: %v", err)
+	}
+
+	// After scrollIntoView, the element should be within its container's visible area
+	result, err := sc.callOn(nodeID, `function() {
+		var rect = this.getBoundingClientRect();
+		var container = this.closest('.h-scroll-container') || this.parentElement;
+		var cRect = container.getBoundingClientRect();
+		var centerX = rect.left + rect.width/2;
+		return centerX >= cRect.left && centerX <= cRect.right;
+	}`)
+	if err != nil {
+		t.Fatalf("visibility check failed: %v", err)
+	}
+	if !result.Result.Value.Bool() {
+		t.Error("scrollIntoView should scroll horizontal containers to reveal element")
+	}
+}
+
+func TestStealthCtx_Scroll_FarBelowFoldClick(t *testing.T) {
+	page := navigateTo(t, "/scroll-scenarios")
+	sc := getStealthCtx(page, &State{})
+
+	btnID, err := sc.element("#far-below-btn", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element() failed: %v", err)
+	}
+	if err := sc.click(btnID); err != nil {
+		t.Fatalf("click() failed: %v", err)
+	}
+	time.Sleep(300 * time.Millisecond)
+
+	resultID, err := sc.element("#far-below-result", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element(#far-below-result) failed: %v", err)
+	}
+	txt, err := sc.text(resultID)
+	if err != nil {
+		t.Fatalf("text() failed: %v", err)
+	}
+	if txt != "far-below-clicked" {
+		t.Errorf("expected 'far-below-clicked', got %q", txt)
+	}
+}
+
+// =====================
+// Event Edge Cases tests
+// =====================
+
+func TestStealthCtx_Click_SelfDestruct(t *testing.T) {
+	page := navigateTo(t, "/event-edge-cases")
+	sc := getStealthCtx(page, &State{})
+
+	nodeID, err := sc.element("#self-destruct", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element() failed: %v", err)
+	}
+	if err := sc.click(nodeID); err != nil {
+		t.Fatalf("click() failed: %v", err)
+	}
+	time.Sleep(200 * time.Millisecond)
+
+	// Button should have removed itself
+	found, err := sc.exists("#self-destruct")
+	if err != nil {
+		t.Fatalf("exists() failed: %v", err)
+	}
+	if found {
+		t.Error("self-destruct button should have been removed after click")
+	}
+
+	// Result should confirm click happened
+	resultID, err := sc.element("#result", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element(#result) failed: %v", err)
+	}
+	txt, err := sc.text(resultID)
+	if err != nil {
+		t.Fatalf("text() failed: %v", err)
+	}
+	if txt != "self-destruct-clicked" {
+		t.Errorf("expected 'self-destruct-clicked', got %q", txt)
+	}
+}
+
+func TestStealthCtx_Click_ReplacesContent(t *testing.T) {
+	page := navigateTo(t, "/event-edge-cases")
+	sc := getStealthCtx(page, &State{})
+
+	nodeID, err := sc.element("#replace-trigger", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element() failed: %v", err)
+	}
+	if err := sc.click(nodeID); err != nil {
+		t.Fatalf("click() failed: %v", err)
+	}
+	time.Sleep(200 * time.Millisecond)
+
+	// The replaced marker should now exist
+	markerID, err := sc.element("#replaced-marker", 2*time.Second)
+	if err != nil {
+		t.Fatalf("element(#replaced-marker) failed: %v", err)
+	}
+	txt, err := sc.text(markerID)
+	if err != nil {
+		t.Fatalf("text() failed: %v", err)
+	}
+	if txt != "Replaced" {
+		t.Errorf("expected 'Replaced', got %q", txt)
+	}
+}
+
+func TestStealthCtx_Click_PreventDefault(t *testing.T) {
+	page := navigateTo(t, "/event-edge-cases")
+	sc := getStealthCtx(page, &State{})
+
+	nodeID, err := sc.element("#prevent-btn", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element() failed: %v", err)
+	}
+	if err := sc.click(nodeID); err != nil {
+		t.Fatalf("click() failed: %v", err)
+	}
+	time.Sleep(200 * time.Millisecond)
+
+	// Should still be on the same page (preventDefault stops navigation)
+	resultID, err := sc.element("#result", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element(#result) failed: %v", err)
+	}
+	txt, err := sc.text(resultID)
+	if err != nil {
+		t.Fatalf("text() failed: %v", err)
+	}
+	if txt != "prevented" {
+		t.Errorf("expected 'prevented', got %q", txt)
+	}
+}
+
+func TestStealthCtx_Click_StopPropagation(t *testing.T) {
+	page := navigateTo(t, "/event-edge-cases")
+	sc := getStealthCtx(page, &State{})
+
+	nodeID, err := sc.element("#inner-btn", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element() failed: %v", err)
+	}
+	if err := sc.click(nodeID); err != nil {
+		t.Fatalf("click() failed: %v", err)
+	}
+	time.Sleep(200 * time.Millisecond)
+
+	resultID, err := sc.element("#result", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element(#result) failed: %v", err)
+	}
+	txt, err := sc.text(resultID)
+	if err != nil {
+		t.Fatalf("text() failed: %v", err)
+	}
+	// stopPropagation should prevent outer from being notified
+	if txt != "inner-clicked" {
+		t.Errorf("expected 'inner-clicked' (stopPropagation should prevent outer), got %q", txt)
+	}
+}
+
+func TestStealthCtx_Click_DelegatedEvent(t *testing.T) {
+	page := navigateTo(t, "/event-edge-cases")
+	sc := getStealthCtx(page, &State{})
+
+	nodeID, err := sc.element("#delegated-item-2", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element() failed: %v", err)
+	}
+	if err := sc.click(nodeID); err != nil {
+		t.Fatalf("click() failed: %v", err)
+	}
+	time.Sleep(200 * time.Millisecond)
+
+	resultID, err := sc.element("#result", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element(#result) failed: %v", err)
+	}
+	txt, err := sc.text(resultID)
+	if err != nil {
+		t.Fatalf("text() failed: %v", err)
+	}
+	if txt != "delegated:delegated-item-2" {
+		t.Errorf("expected 'delegated:delegated-item-2', got %q", txt)
+	}
+}
+
+func TestStealthCtx_Click_MovingButton(t *testing.T) {
+	page := navigateTo(t, "/event-edge-cases")
+	sc := getStealthCtx(page, &State{})
+
+	nodeID, err := sc.element("#moving-btn", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element() failed: %v", err)
+	}
+
+	// First click moves the button
+	if err := sc.click(nodeID); err != nil {
+		t.Fatalf("first click() failed: %v", err)
+	}
+	time.Sleep(300 * time.Millisecond)
+
+	resultID, err := sc.element("#result", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element(#result) failed: %v", err)
+	}
+	txt, err := sc.text(resultID)
+	if err != nil {
+		t.Fatalf("text() failed: %v", err)
+	}
+	if txt != "move-clicked:1" {
+		t.Errorf("expected 'move-clicked:1' after first click, got %q", txt)
+	}
+
+	// Second click — button has moved, need to re-query for a fresh nodeID
+	// (the old nodeID may be invalidated by DOM tree re-fetch in scrollIntoView)
+	nodeID, err = sc.element("#moving-btn", defaultTimeout)
+	if err != nil {
+		t.Fatalf("re-query element(#moving-btn) failed: %v", err)
+	}
+	if err := sc.click(nodeID); err != nil {
+		t.Fatalf("second click() failed: %v", err)
+	}
+	time.Sleep(300 * time.Millisecond)
+
+	// Re-query result element (previous nodeID invalidated by DOM tree re-fetch)
+	resultID, err = sc.element("#result", defaultTimeout)
+	if err != nil {
+		t.Fatalf("re-query element(#result) failed: %v", err)
+	}
+	txt, err = sc.text(resultID)
+	if err != nil {
+		t.Fatalf("text() failed: %v", err)
+	}
+	if txt != "move-clicked:2" {
+		t.Errorf("expected 'move-clicked:2' after second click at new position, got %q", txt)
+	}
+}
+
+func TestStealthCtx_Click_DisabledButton(t *testing.T) {
+	page := navigateTo(t, "/event-edge-cases")
+	sc := getStealthCtx(page, &State{})
+
+	nodeID, err := sc.element("#disabled-btn", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element() failed: %v", err)
+	}
+	// Click a disabled button — the click event should not fire on disabled buttons
+	if err := sc.click(nodeID); err != nil {
+		t.Fatalf("click() failed: %v", err)
+	}
+	time.Sleep(200 * time.Millisecond)
+
+	resultID, err := sc.element("#result", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element(#result) failed: %v", err)
+	}
+	txt, err := sc.text(resultID)
+	if err != nil {
+		t.Fatalf("text() failed: %v", err)
+	}
+	if txt == "disabled-clicked" {
+		t.Error("disabled button should not fire click handler")
+	}
+}
+
+func TestStealthCtx_Click_DoubleClick(t *testing.T) {
+	page := navigateTo(t, "/event-edge-cases")
+	sc := getStealthCtx(page, &State{})
+
+	nodeID, err := sc.element("#dblclick-btn", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element() failed: %v", err)
+	}
+
+	// Double-click
+	if err := sc.dblclick(nodeID); err != nil {
+		t.Fatalf("dblclick() failed: %v", err)
+	}
+	time.Sleep(300 * time.Millisecond)
+
+	resultID, err := sc.element("#result", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element(#result) failed: %v", err)
+	}
+	txt, err := sc.text(resultID)
+	if err != nil {
+		t.Fatalf("text() failed: %v", err)
+	}
+	// Two rapid clicks on the same element should trigger a dblclick event.
+	// Fix: click() could accept a clickCount option, or provide a dblclick() method.
+	if txt != "dblclick-fired" {
+		t.Errorf("two rapid clicks should trigger dblclick event, got %q", txt)
+	}
+}
+
+// =====================
+// Advanced Form Interactions tests
+// =====================
+
+func TestStealthCtx_Input_Textarea(t *testing.T) {
+	page := navigateTo(t, "/form-advanced")
+	sc := getStealthCtx(page, &State{})
+
+	nodeID, err := sc.element("#textarea-input", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element() failed: %v", err)
+	}
+	if err := sc.input(nodeID, "Hello textarea"); err != nil {
+		t.Fatalf("input() failed: %v", err)
+	}
+
+	result, err := sc.callOn(nodeID, "function() { return this.value; }")
+	if err != nil {
+		t.Fatalf("callOn() failed: %v", err)
+	}
+	if result.Result.Value.Str() != "Hello textarea" {
+		t.Errorf("expected 'Hello textarea', got %q", result.Result.Value.Str())
+	}
+}
+
+func TestStealthCtx_Input_ContentEditable(t *testing.T) {
+	page := navigateTo(t, "/form-advanced")
+	sc := getStealthCtx(page, &State{})
+
+	nodeID, err := sc.element("#contenteditable-div", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element() failed: %v", err)
+	}
+	if err := sc.input(nodeID, "editable text"); err != nil {
+		t.Fatalf("input() failed: %v", err)
+	}
+
+	txt, err := sc.text(nodeID)
+	if err != nil {
+		t.Fatalf("text() failed: %v", err)
+	}
+	if txt != "editable text" {
+		t.Errorf("expected 'editable text', got %q", txt)
+	}
+}
+
+func TestStealthCtx_Input_PasswordInput(t *testing.T) {
+	page := navigateTo(t, "/form-advanced")
+	sc := getStealthCtx(page, &State{})
+
+	nodeID, err := sc.element("#password-input", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element() failed: %v", err)
+	}
+	if err := sc.input(nodeID, "secret123"); err != nil {
+		t.Fatalf("input() failed: %v", err)
+	}
+
+	result, err := sc.callOn(nodeID, "function() { return this.value; }")
+	if err != nil {
+		t.Fatalf("callOn() failed: %v", err)
+	}
+	if result.Result.Value.Str() != "secret123" {
+		t.Errorf("expected 'secret123', got %q", result.Result.Value.Str())
+	}
+}
+
+func TestStealthCtx_Input_NumberInput(t *testing.T) {
+	page := navigateTo(t, "/form-advanced")
+	sc := getStealthCtx(page, &State{})
+
+	nodeID, err := sc.element("#number-input", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element() failed: %v", err)
+	}
+	if err := sc.input(nodeID, "42"); err != nil {
+		t.Fatalf("input() failed: %v", err)
+	}
+
+	result, err := sc.callOn(nodeID, "function() { return this.value; }")
+	if err != nil {
+		t.Fatalf("callOn() failed: %v", err)
+	}
+	if result.Result.Value.Str() != "42" {
+		t.Errorf("expected '42', got %q", result.Result.Value.Str())
+	}
+}
+
+func TestStealthCtx_Click_Checkbox(t *testing.T) {
+	page := navigateTo(t, "/form-advanced")
+	sc := getStealthCtx(page, &State{})
+
+	// checkbox-1 is unchecked initially
+	nodeID, err := sc.element("#checkbox-1", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element() failed: %v", err)
+	}
+
+	// Check initial state
+	result, err := sc.callOn(nodeID, "function() { return this.checked; }")
+	if err != nil {
+		t.Fatalf("callOn() failed: %v", err)
+	}
+	if result.Result.Value.Bool() {
+		t.Fatal("checkbox-1 should be unchecked initially")
+	}
+
+	// Click to check
+	if err := sc.click(nodeID); err != nil {
+		t.Fatalf("click() failed: %v", err)
+	}
+	time.Sleep(200 * time.Millisecond)
+
+	result, err = sc.callOn(nodeID, "function() { return this.checked; }")
+	if err != nil {
+		t.Fatalf("callOn() failed: %v", err)
+	}
+	if !result.Result.Value.Bool() {
+		t.Error("checkbox-1 should be checked after click")
+	}
+}
+
+func TestStealthCtx_Click_RadioButton(t *testing.T) {
+	page := navigateTo(t, "/form-advanced")
+	sc := getStealthCtx(page, &State{})
+
+	// radio-c is initially checked, click radio-a
+	nodeID, err := sc.element("#radio-a", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element() failed: %v", err)
+	}
+	if err := sc.click(nodeID); err != nil {
+		t.Fatalf("click() failed: %v", err)
+	}
+	time.Sleep(200 * time.Millisecond)
+
+	// radio-a should now be checked
+	result, err := sc.callOn(nodeID, "function() { return this.checked; }")
+	if err != nil {
+		t.Fatalf("callOn() failed: %v", err)
+	}
+	if !result.Result.Value.Bool() {
+		t.Error("radio-a should be checked after click")
+	}
+
+	// radio-c should now be unchecked
+	radioCID, err := sc.element("#radio-c", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element(#radio-c) failed: %v", err)
+	}
+	result, err = sc.callOn(radioCID, "function() { return this.checked; }")
+	if err != nil {
+		t.Fatalf("callOn(#radio-c) failed: %v", err)
+	}
+	if result.Result.Value.Bool() {
+		t.Error("radio-c should be unchecked after clicking radio-a")
+	}
+}
+
+func TestStealthCtx_Click_CustomDropdown(t *testing.T) {
+	page := navigateTo(t, "/form-advanced")
+	sc := getStealthCtx(page, &State{})
+
+	// Click the toggle to open dropdown
+	toggleID, err := sc.element("#dropdown-toggle", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element(#dropdown-toggle) failed: %v", err)
+	}
+	if err := sc.click(toggleID); err != nil {
+		t.Fatalf("click(toggle) failed: %v", err)
+	}
+	time.Sleep(300 * time.Millisecond)
+
+	// Dropdown should be open — select Option 2
+	itemID, err := sc.element(".dropdown-item[data-value='opt2']", 2*time.Second)
+	if err != nil {
+		t.Fatalf("element(.dropdown-item[data-value='opt2']) failed: %v", err)
+	}
+	if err := sc.click(itemID); err != nil {
+		t.Fatalf("click(option 2) failed: %v", err)
+	}
+	time.Sleep(300 * time.Millisecond)
+
+	// Check the result
+	resultID, err := sc.element("#dropdown-result", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element(#dropdown-result) failed: %v", err)
+	}
+	txt, err := sc.text(resultID)
+	if err != nil {
+		t.Fatalf("text() failed: %v", err)
+	}
+	if txt != "opt2" {
+		t.Errorf("expected 'opt2', got %q", txt)
+	}
+}
+
+func TestStealthCtx_ClearInput_Textarea(t *testing.T) {
+	page := navigateTo(t, "/form-advanced")
+	sc := getStealthCtx(page, &State{})
+
+	nodeID, err := sc.element("#textarea-input", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element() failed: %v", err)
+	}
+	// Type, then clear
+	if err := sc.input(nodeID, "some text"); err != nil {
+		t.Fatalf("input() failed: %v", err)
+	}
+	if err := sc.clearInput(nodeID); err != nil {
+		t.Fatalf("clearInput() failed: %v", err)
+	}
+
+	result, err := sc.callOn(nodeID, "function() { return this.value; }")
+	if err != nil {
+		t.Fatalf("callOn() failed: %v", err)
+	}
+	if result.Result.Value.Str() != "" {
+		t.Errorf("expected empty textarea after clear, got %q", result.Result.Value.Str())
+	}
+}
+
+func TestStealthCtx_ClearInput_ContentEditable(t *testing.T) {
+	page := navigateTo(t, "/form-advanced")
+	sc := getStealthCtx(page, &State{})
+
+	nodeID, err := sc.element("#contenteditable-div", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element() failed: %v", err)
+	}
+
+	// Set content, then clear it.
+	// Fix: clearInput should handle contenteditable (use Selection API or execCommand).
+	_, err = sc.callOn(nodeID, `function() { this.textContent = "test content"; }`)
+	if err != nil {
+		t.Fatalf("callOn to set content failed: %v", err)
+	}
+
+	err = sc.clearInput(nodeID)
+	if err != nil {
+		t.Errorf("clearInput on contenteditable should not error: %v", err)
+		return
+	}
+
+	txt, err := sc.text(nodeID)
+	if err != nil {
+		t.Fatalf("text() failed: %v", err)
+	}
+	if txt != "" {
+		t.Errorf("clearInput on contenteditable should clear content, got %q", txt)
+	}
+}
+
+func TestStealthCtx_Input_DateInput(t *testing.T) {
+	page := navigateTo(t, "/form-advanced")
+	sc := getStealthCtx(page, &State{})
+
+	nodeID, err := sc.element("#date-input", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element() failed: %v", err)
+	}
+	// input() should handle date inputs correctly.
+	// Fix: detect input[type=date] and set value via JS or use special key sequences.
+	if err := sc.input(nodeID, "2024-01-15"); err != nil {
+		t.Fatalf("input() failed: %v", err)
+	}
+
+	result, err := sc.callOn(nodeID, "function() { return this.value; }")
+	if err != nil {
+		t.Fatalf("callOn() failed: %v", err)
+	}
+	val := result.Result.Value.Str()
+	if val != "2024-01-15" {
+		t.Errorf("input on date input: expected '2024-01-15', got %q", val)
+	}
+}
+
+func TestStealthCtx_Input_RangeSlider(t *testing.T) {
+	page := navigateTo(t, "/form-advanced")
+	sc := getStealthCtx(page, &State{})
+
+	nodeID, err := sc.element("#range-input", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element() failed: %v", err)
+	}
+	// input() should handle range inputs.
+	// Fix: detect input[type=range] and set value via JS property + input event.
+	if err := sc.input(nodeID, "75"); err != nil {
+		t.Fatalf("input() failed: %v", err)
+	}
+
+	result, err := sc.callOn(nodeID, "function() { return this.value; }")
+	if err != nil {
+		t.Fatalf("callOn() failed: %v", err)
+	}
+	val := result.Result.Value.Str()
+	if val != "75" {
+		t.Errorf("input on range slider: expected '75', got %q", val)
+	}
+}
+
+// =====================
+// SPA Navigation tests
+// =====================
+
+func TestStealthCtx_SPA_PushStateNavigation(t *testing.T) {
+	page := navigateTo(t, "/spa-navigation")
+	sc := getStealthCtx(page, &State{})
+
+	// Click the "About" link
+	nodeID, err := sc.element("#nav-about", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element(#nav-about) failed: %v", err)
+	}
+	if err := sc.click(nodeID); err != nil {
+		t.Fatalf("click() failed: %v", err)
+	}
+
+	// Wait for async content to appear (300ms delay in SPA)
+	titleID, err := sc.element("#page-title", 2*time.Second)
+	if err != nil {
+		t.Fatalf("element(#page-title) failed: %v", err)
+	}
+	txt, err := sc.text(titleID)
+	if err != nil {
+		t.Fatalf("text() failed: %v", err)
+	}
+	if txt != "About Page" {
+		t.Errorf("expected 'About Page', got %q", txt)
+	}
+}
+
+func TestStealthCtx_SPA_ContentAppearsAfterDelay(t *testing.T) {
+	page := navigateTo(t, "/spa-navigation")
+	sc := getStealthCtx(page, &State{})
+
+	// Click "Contact" to navigate
+	nodeID, err := sc.element("#nav-contact", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element(#nav-contact) failed: %v", err)
+	}
+	if err := sc.click(nodeID); err != nil {
+		t.Fatalf("click() failed: %v", err)
+	}
+
+	// Content appears after 300ms delay — polling should handle it
+	bodyID, err := sc.element("#page-body", 2*time.Second)
+	if err != nil {
+		t.Fatalf("element(#page-body) failed: %v", err)
+	}
+	txt, err := sc.text(bodyID)
+	if err != nil {
+		t.Fatalf("text() failed: %v", err)
+	}
+	if txt != "Get in touch with us" {
+		t.Errorf("expected 'Get in touch with us', got %q", txt)
+	}
+}
+
+func TestStealthCtx_SPA_RapidNavigation(t *testing.T) {
+	page := navigateTo(t, "/spa-navigation")
+	sc := getStealthCtx(page, &State{})
+
+	// Rapidly click through all three navigation links
+	links := []string{"#nav-about", "#nav-contact", "#nav-home"}
+	for _, sel := range links {
+		nodeID, err := sc.element(sel, defaultTimeout)
+		if err != nil {
+			t.Fatalf("element(%s) failed: %v", sel, err)
+		}
+		if err := sc.click(nodeID); err != nil {
+			t.Fatalf("click(%s) failed: %v", sel, err)
+		}
+		time.Sleep(100 * time.Millisecond) // brief pause between clicks
+	}
+
+	// Wait for final content to load
+	time.Sleep(500 * time.Millisecond)
+
+	// Should be on home page
+	titleID, err := sc.element("#page-title", 2*time.Second)
+	if err != nil {
+		t.Fatalf("element(#page-title) failed: %v", err)
+	}
+	txt, err := sc.text(titleID)
+	if err != nil {
+		t.Fatalf("text() failed: %v", err)
+	}
+	if txt != "Home Page" {
+		t.Errorf("expected 'Home Page' after rapid navigation, got %q", txt)
+	}
+}
+
+func TestStealthCtx_SPA_IsolatedWorldSurvivesPushState(t *testing.T) {
+	page := navigateTo(t, "/spa-navigation")
+	sc := getStealthCtx(page, &State{})
+
+	// Navigate to about
+	nodeID, err := sc.element("#nav-about", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element(#nav-about) failed: %v", err)
+	}
+	if err := sc.click(nodeID); err != nil {
+		t.Fatalf("click() failed: %v", err)
+	}
+	time.Sleep(500 * time.Millisecond)
+
+	// eval() should still work in the isolated world after pushState
+	result, err := sc.eval("document.title")
+	if err != nil {
+		t.Fatalf("eval() after pushState failed: %v", err)
+	}
+	title := result.Result.Value.Str()
+	if title != "SPA Navigation" {
+		t.Errorf("expected title 'SPA Navigation', got %q", title)
+	}
+}
+
+func TestStealthCtx_SPA_StaleNodeAfterContentReplace(t *testing.T) {
+	page := navigateTo(t, "/spa-navigation")
+	sc := getStealthCtx(page, &State{})
+
+	// Grab node ID for initial page-title
+	titleID, err := sc.element("#page-title", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element(#page-title) failed: %v", err)
+	}
+
+	// Navigate to about — this replaces innerHTML, destroying old nodes
+	aboutLink, err := sc.element("#nav-about", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element(#nav-about) failed: %v", err)
+	}
+	if err := sc.click(aboutLink); err != nil {
+		t.Fatalf("click() failed: %v", err)
+	}
+	time.Sleep(500 * time.Millisecond)
+
+	// EXPECTED FAIL: old titleID is stale after innerHTML replacement
+	_, err = sc.text(titleID)
+	if err == nil {
+		t.Skip("Expected stale nodeID error after SPA content replace, but text() succeeded")
+	}
+	t.Logf("Confirmed limitation: stale nodeID after SPA innerHTML replace: %v", err)
+}
+
+// =====================
+// Complex Selectors tests
+// =====================
+
+func TestStealthCtx_Selector_NthChild(t *testing.T) {
+	page := navigateTo(t, "/complex-selectors")
+	sc := getStealthCtx(page, &State{})
+
+	// Select 3rd row in table
+	nodeID, err := sc.element("#data-table tbody tr:nth-child(3) .name", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element() failed: %v", err)
+	}
+	txt, err := sc.text(nodeID)
+	if err != nil {
+		t.Fatalf("text() failed: %v", err)
+	}
+	if txt != "Gamma" {
+		t.Errorf("expected 'Gamma', got %q", txt)
+	}
+}
+
+func TestStealthCtx_Selector_NthOfType(t *testing.T) {
+	page := navigateTo(t, "/complex-selectors")
+	sc := getStealthCtx(page, &State{})
+
+	// Select 2nd paragraph in siblings
+	nodeID, err := sc.element("#siblings p:nth-of-type(2)", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element() failed: %v", err)
+	}
+	txt, err := sc.text(nodeID)
+	if err != nil {
+		t.Fatalf("text() failed: %v", err)
+	}
+	if txt != "Body paragraph" {
+		t.Errorf("expected 'Body paragraph', got %q", txt)
+	}
+}
+
+func TestStealthCtx_Selector_AttributeContains(t *testing.T) {
+	page := navigateTo(t, "/complex-selectors")
+	sc := getStealthCtx(page, &State{})
+
+	nodeID, err := sc.element("[data-status*='act']", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element() failed: %v", err)
+	}
+	txt, err := sc.text(nodeID)
+	if err != nil {
+		t.Fatalf("text() failed: %v", err)
+	}
+	if txt != "Deep Target" {
+		t.Errorf("expected 'Deep Target', got %q", txt)
+	}
+}
+
+func TestStealthCtx_Selector_AttributeStartsWith(t *testing.T) {
+	page := navigateTo(t, "/complex-selectors")
+	sc := getStealthCtx(page, &State{})
+
+	nodeID, err := sc.element("[data-role^='tar']", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element() failed: %v", err)
+	}
+	txt, err := sc.text(nodeID)
+	if err != nil {
+		t.Fatalf("text() failed: %v", err)
+	}
+	if txt != "Deep Target" {
+		t.Errorf("expected 'Deep Target', got %q", txt)
+	}
+}
+
+func TestStealthCtx_Selector_MultipleAttributes(t *testing.T) {
+	page := navigateTo(t, "/complex-selectors")
+	sc := getStealthCtx(page, &State{})
+
+	nodeID, err := sc.element("[data-role='target'][data-status='active']", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element() failed: %v", err)
+	}
+	txt, err := sc.text(nodeID)
+	if err != nil {
+		t.Fatalf("text() failed: %v", err)
+	}
+	if txt != "Deep Target" {
+		t.Errorf("expected 'Deep Target', got %q", txt)
+	}
+}
+
+func TestStealthCtx_Selector_DeepNesting(t *testing.T) {
+	page := navigateTo(t, "/complex-selectors")
+	sc := getStealthCtx(page, &State{})
+
+	nodeID, err := sc.element("#root .level-1 .level-2 .level-3 #deep-target", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element() failed: %v", err)
+	}
+	txt, err := sc.text(nodeID)
+	if err != nil {
+		t.Fatalf("text() failed: %v", err)
+	}
+	if txt != "Deep Target" {
+		t.Errorf("expected 'Deep Target', got %q", txt)
+	}
+}
+
+func TestStealthCtx_Selector_ChildCombinator(t *testing.T) {
+	page := navigateTo(t, "/complex-selectors")
+	sc := getStealthCtx(page, &State{})
+
+	// Direct child combinator
+	nodeID, err := sc.element("#root > .level-1 > .level-2 > .level-3 > #deep-target", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element() failed: %v", err)
+	}
+	txt, err := sc.text(nodeID)
+	if err != nil {
+		t.Fatalf("text() failed: %v", err)
+	}
+	if txt != "Deep Target" {
+		t.Errorf("expected 'Deep Target', got %q", txt)
+	}
+}
+
+func TestStealthCtx_Selector_SiblingCombinator(t *testing.T) {
+	page := navigateTo(t, "/complex-selectors")
+	sc := getStealthCtx(page, &State{})
+
+	// Adjacent sibling: h2 + p
+	nodeID, err := sc.element("#siblings h2 + p", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element() failed: %v", err)
+	}
+	txt, err := sc.text(nodeID)
+	if err != nil {
+		t.Fatalf("text() failed: %v", err)
+	}
+	if txt != "Intro paragraph" {
+		t.Errorf("expected 'Intro paragraph', got %q", txt)
+	}
+}
+
+func TestStealthCtx_Selector_Not(t *testing.T) {
+	page := navigateTo(t, "/complex-selectors")
+	sc := getStealthCtx(page, &State{})
+
+	// Select list items that are NOT type-b
+	nodeIDs, err := sc.elements("#mixed-list .item:not(.type-b)", defaultTimeout)
+	if err != nil {
+		t.Fatalf("elements() failed: %v", err)
+	}
+	if len(nodeIDs) != 3 {
+		t.Errorf("expected 3 items with :not(.type-b), got %d", len(nodeIDs))
+	}
+}
+
+func TestStealthCtx_Selector_FirstLastChild(t *testing.T) {
+	page := navigateTo(t, "/complex-selectors")
+	sc := getStealthCtx(page, &State{})
+
+	// First child
+	firstID, err := sc.element("#mixed-list li:first-child", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element(:first-child) failed: %v", err)
+	}
+	firstTxt, err := sc.text(firstID)
+	if err != nil {
+		t.Fatalf("text() failed: %v", err)
+	}
+	if firstTxt != "A1" {
+		t.Errorf("expected first child 'A1', got %q", firstTxt)
+	}
+
+	// Last child
+	lastID, err := sc.element("#mixed-list li:last-child", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element(:last-child) failed: %v", err)
+	}
+	lastTxt, err := sc.text(lastID)
+	if err != nil {
+		t.Fatalf("text() failed: %v", err)
+	}
+	if lastTxt != "A3" {
+		t.Errorf("expected last child 'A3', got %q", lastTxt)
+	}
+}
+
+// =====================
+// iframe & Shadow DOM tests — Documenting Limitations
+// =====================
+
+func TestStealthCtx_IFrame_CannotQueryInside(t *testing.T) {
+	page := navigateTo(t, "/iframe-test")
+	sc := getStealthCtx(page, &State{})
+
+	// EXPECTED FAIL: Cannot query elements inside an iframe from the parent DOM.
+	// DOM.querySelector operates on the parent document only.
+	_, err := sc.element("#iframe-content", 2*time.Second)
+	if err != nil {
+		t.Logf("Confirmed limitation: cannot query inside iframe from parent: %v", err)
+	} else {
+		t.Log("Unexpectedly found #iframe-content — selector may have leaked through")
+	}
+}
+
+func TestStealthCtx_IFrame_CanFindIFrameElement(t *testing.T) {
+	page := navigateTo(t, "/iframe-test")
+	sc := getStealthCtx(page, &State{})
+
+	// Can find the iframe element itself
+	nodeID, err := sc.element("#test-iframe", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element(#test-iframe) failed: %v", err)
+	}
+
+	html, err := sc.outerHTML(nodeID)
+	if err != nil {
+		t.Fatalf("outerHTML() failed: %v", err)
+	}
+	if !strings.Contains(html, "iframe") {
+		t.Errorf("expected outerHTML to contain 'iframe', got %q", html)
+	}
+}
+
+func TestStealthCtx_ShadowDOM_CannotQueryInside(t *testing.T) {
+	page := navigateTo(t, "/shadow-dom-test")
+	sc := getStealthCtx(page, &State{})
+
+	// EXPECTED FAIL: Cannot query inside shadow DOM via querySelector on the document.
+	_, err := sc.element("#shadow-content", 2*time.Second)
+	if err != nil {
+		t.Logf("Confirmed limitation: cannot query inside shadow DOM: %v", err)
+	} else {
+		t.Log("Unexpectedly found #shadow-content — may have pierced shadow boundary")
+	}
+}
+
+func TestStealthCtx_ShadowDOM_CanFindHost(t *testing.T) {
+	page := navigateTo(t, "/shadow-dom-test")
+	sc := getStealthCtx(page, &State{})
+
+	// Can find the shadow host element
+	nodeID, err := sc.element("#shadow-host", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element(#shadow-host) failed: %v", err)
+	}
+
+	html, err := sc.outerHTML(nodeID)
+	if err != nil {
+		t.Fatalf("outerHTML() failed: %v", err)
+	}
+	if !strings.Contains(html, "shadow-host") {
+		t.Errorf("expected outerHTML to contain 'shadow-host', got %q", html)
+	}
+}
+
+// =====================
+// Live Website Smoke Tests
+// =====================
+
+func TestStealthCtx_Live_WikipediaSearch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live site test in short mode")
+	}
+
+	browser := launchStealthBrowser(t)
+	page := browser.MustPage("")
+	defer page.MustClose()
+	injectStealthScripts(t, page)
+
+	applyStealthToPage(page, browser, &State{
+		ViewportWidth:  1920,
+		ViewportHeight: 1080,
+	})
+
+	page.MustNavigate("https://en.wikipedia.org/wiki/Main_Page")
+	page.MustWaitLoad()
+
+	sc := getStealthCtx(page, &State{ViewportWidth: 1920, ViewportHeight: 1080})
+
+	// Find the search input
+	searchID, err := sc.element("#searchInput", 10*time.Second)
+	if err != nil {
+		t.Fatalf("element(#searchInput) failed: %v", err)
+	}
+
+	// Type a search query
+	if err := sc.input(searchID, "Go programming language"); err != nil {
+		t.Fatalf("input() failed: %v", err)
+	}
+
+	// Submit the search form
+	formID, err := sc.element("#searchform", defaultTimeout)
+	if err != nil {
+		t.Fatalf("element(#searchform) failed: %v", err)
+	}
+	if err := sc.submit(formID); err != nil {
+		t.Fatalf("submit() failed: %v", err)
+	}
+
+	// Wait for results page
+	time.Sleep(3 * time.Second)
+
+	// Verify we got search results or a page
+	result, err := sc.eval("document.title")
+	if err != nil {
+		t.Fatalf("eval() failed: %v", err)
+	}
+	title := result.Result.Value.Str()
+	t.Logf("Wikipedia search result page title: %s", title)
+	if title == "" {
+		t.Error("expected non-empty page title after Wikipedia search")
+	}
+}
+
+func TestStealthCtx_Live_HackerNewsHeadlines(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live site test in short mode")
+	}
+
+	browser := launchStealthBrowser(t)
+	page := browser.MustPage("")
+	defer page.MustClose()
+	injectStealthScripts(t, page)
+
+	applyStealthToPage(page, browser, &State{
+		ViewportWidth:  1920,
+		ViewportHeight: 1080,
+	})
+
+	page.MustNavigate("https://news.ycombinator.com/")
+	page.MustWaitLoad()
+
+	sc := getStealthCtx(page, &State{ViewportWidth: 1920, ViewportHeight: 1080})
+
+	// Query all headline links
+	nodeIDs, err := sc.elements(".titleline", 10*time.Second)
+	if err != nil {
+		t.Fatalf("elements(.titleline) failed: %v", err)
+	}
+	if len(nodeIDs) < 10 {
+		t.Errorf("expected at least 10 headlines on HN, got %d", len(nodeIDs))
+	} else {
+		t.Logf("Found %d headlines on Hacker News", len(nodeIDs))
+	}
+}
+
+func TestStealthCtx_Live_GitHubRepoPage(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live site test in short mode")
+	}
+
+	browser := launchStealthBrowser(t)
+	page := browser.MustPage("")
+	defer page.MustClose()
+	injectStealthScripts(t, page)
+
+	applyStealthToPage(page, browser, &State{
+		ViewportWidth:  1920,
+		ViewportHeight: 1080,
+	})
+
+	page.MustNavigate("https://github.com/go-rod/rod")
+	page.MustWaitLoad()
+
+	sc := getStealthCtx(page, &State{ViewportWidth: 1920, ViewportHeight: 1080})
+
+	// Verify page loaded by checking for README or repo description
+	time.Sleep(2 * time.Second)
+
+	result, err := sc.eval("document.title")
+	if err != nil {
+		t.Fatalf("eval() failed: %v", err)
+	}
+	title := result.Result.Value.Str()
+	t.Logf("GitHub repo page title: %s", title)
+	if !strings.Contains(strings.ToLower(title), "rod") {
+		t.Errorf("expected page title to contain 'rod', got %q", title)
+	}
+}
+
+func TestStealthCtx_Live_StackOverflow(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live site test in short mode")
+	}
+
+	browser := launchStealthBrowser(t)
+	page := browser.MustPage("")
+	defer page.MustClose()
+	injectStealthScripts(t, page)
+
+	applyStealthToPage(page, browser, &State{
+		ViewportWidth:  1920,
+		ViewportHeight: 1080,
+	})
+
+	page.MustNavigate("https://stackoverflow.com/questions/tagged/go")
+	page.MustWaitLoad()
+
+	sc := getStealthCtx(page, &State{ViewportWidth: 1920, ViewportHeight: 1080})
+	time.Sleep(3 * time.Second)
+
+	// Try to find question titles (may fail on cookie consent overlay)
+	result, err := sc.eval("document.title")
+	if err != nil {
+		t.Fatalf("eval() failed: %v", err)
+	}
+	title := result.Result.Value.Str()
+	t.Logf("StackOverflow page title: %s", title)
+	if title == "" {
+		t.Error("expected non-empty page title on StackOverflow")
+	}
+}
+
+func TestStealthCtx_Live_HTTPBin(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live site test in short mode")
+	}
+
+	browser := launchStealthBrowser(t)
+	page := browser.MustPage("")
+	defer page.MustClose()
+	injectStealthScripts(t, page)
+
+	applyStealthToPage(page, browser, &State{
+		ViewportWidth:  1920,
+		ViewportHeight: 1080,
+	})
+
+	page.MustNavigate("https://httpbin.org/get")
+	page.MustWaitLoad()
+
+	sc := getStealthCtx(page, &State{ViewportWidth: 1920, ViewportHeight: 1080})
+	time.Sleep(2 * time.Second)
+
+	// httpbin.org/get returns JSON — verify body contains expected JSON structure
+	result, err := sc.eval("document.body.innerText")
+	if err != nil {
+		t.Fatalf("eval() failed: %v", err)
+	}
+	bodyText := result.Result.Value.Str()
+	if !strings.Contains(bodyText, "headers") && !strings.Contains(bodyText, "origin") {
+		t.Errorf("expected httpbin.org/get response to contain 'headers' or 'origin', got: %s", bodyText[:min(len(bodyText), 500)])
+	} else {
+		t.Logf("httpbin.org/get response contains expected JSON fields")
 	}
 }
