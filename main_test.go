@@ -745,6 +745,35 @@ func TestExtractScopeArgs_HomeDirMissingValue(t *testing.T) {
 	}
 }
 
+func TestResolveTempHomeDir_CreatesTempDir(t *testing.T) {
+	dir, err := resolveTempHomeDir("tmp")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer os.RemoveAll(dir)
+
+	if !strings.HasPrefix(dir, "/tmp/rodney-session-") {
+		t.Errorf("expected /tmp/rodney-session-* prefix, got %q", dir)
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("temp dir not created: %v", err)
+	}
+	if !info.IsDir() {
+		t.Errorf("expected directory, got file")
+	}
+}
+
+func TestResolveTempHomeDir_PassthroughForRealPath(t *testing.T) {
+	dir, err := resolveTempHomeDir("/tmp/my-custom-session")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if dir != "/tmp/my-custom-session" {
+		t.Errorf("expected passthrough of real path, got %q", dir)
+	}
+}
+
 func TestResolveStateDir_Global(t *testing.T) {
 	dir := resolveStateDir(scopeGlobal, "/some/working/dir")
 	home, _ := os.UserHomeDir()

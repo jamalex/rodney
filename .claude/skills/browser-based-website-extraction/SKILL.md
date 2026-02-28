@@ -1,6 +1,6 @@
 ---
-name: web-extract
-description: Use when you need to load a webpage and extract specific information from it — articles, data, search results, or any structured content from live websites
+name: browser-based-website-extraction
+description: "FALLBACK for WebFetch failures: Use when WebFetch returns 403, 401, empty content, or anti-bot blocks. Also use when a page requires JS rendering, interaction (clicking, navigating tabs, filling search filters), or when you need to extract structured content from complex live websites. This skill drives a real Chrome browser via the rodney CLI to bypass bot detection and render dynamic content."
 ---
 
 # Web Extract
@@ -15,31 +15,27 @@ Load a webpage using rodney and extract specific information, driven by a stated
 
 ## Phase 1: Setup
 
-### Session Isolation
-
-Every invocation creates a fresh session directory to avoid conflicts with other agents:
-
-```bash
-mktemp -d /tmp/rodney-session-XXXXXX
-```
-
-Store the resulting path (e.g. `/tmp/rodney-session-a1b2c3`). Every rodney command in this session must end with `--home-dir <path>` using that path.
-
-If the caller passes an existing session path, reuse it instead of creating a new one.
-
 ### Start Rodney
+
+Start rodney with `--home-dir tmp` to auto-create an isolated session directory. The session path is printed in the output — use it as `--home-dir <session>` on all subsequent commands.
 
 Determine flags from caller's intent:
 
 | Caller says | Flags |
 |-------------|-------|
-| Nothing / default | `--stealth` |
-| Wants to watch or interact | `--show --stealth` |
-| Explicitly no stealth | (no flags) |
+| Nothing / default | `--show --stealth` |
+| Explicitly headless / background | `--stealth` |
+| Explicitly no stealth | `--show` (or no flags) |
 
 ```bash
-rodney start [flags] --home-dir <session>
+rodney start --show --stealth --home-dir tmp
+# Output includes: Session: /tmp/rodney-session-abc123
+# Use that path for all subsequent commands
 ```
+
+**Why `--show` by default:** Headless mode is currently detected by Cloudflare and similar anti-bot systems. Visible mode avoids this. Use headless only when the caller explicitly asks for background/headless operation.
+
+If the caller passes an existing session path, use `--home-dir <path>` instead of `tmp` to reuse that session.
 
 If `start --stealth` fails, retry without `--stealth` and note: "Stealth mode unavailable, proceeding without it."
 
@@ -210,15 +206,17 @@ If page interactions are failing (clicks not registering, inputs not working, el
 
 ### Cleanup
 
-**`--show` mode:** Leave rodney running. Report the session path so the caller can reuse it for follow-ups:
+**Default (`--show` mode):** Stop rodney and clean up when done:
+```bash
+rodney stop --home-dir <session>
+```
+
+If the caller may want follow-up queries, leave rodney running instead and report the session path:
 ```
 Browser left running. To reuse: --home-dir <session>
 ```
 
-**Headless mode:** Stop rodney (automatically cleans up the session directory):
-```bash
-rodney stop --home-dir <session>
-```
+**Headless mode:** Same — `rodney stop --home-dir <session>` automatically cleans up the session directory.
 
 ## Flow Summary
 
@@ -267,4 +265,4 @@ Setup → Extract → Evaluate
 - Try at least one DOM query before screenshotting
 - Include source URLs in the output
 - Note when screenshots were used and why
-- Create a fresh session directory unless caller provides one
+- Use `--home-dir tmp` on start unless caller provides an existing session

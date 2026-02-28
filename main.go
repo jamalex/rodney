@@ -62,6 +62,15 @@ func waitForProcessExit(pid int, timeout time.Duration) {
 	}
 }
 
+// resolveTempHomeDir handles the special --home-dir value "tmp" by creating
+// a temporary directory. For any other value, it returns the path unchanged.
+func resolveTempHomeDir(dir string) (string, error) {
+	if dir == "tmp" {
+		return os.MkdirTemp("/tmp", "rodney-session-")
+	}
+	return dir, nil
+}
+
 // cleanupSessionDir removes a session directory. Only called for directories
 // created via --home-dir (never for default or env-var-based directories).
 func cleanupSessionDir(dir string) {
@@ -221,6 +230,11 @@ func main() {
 	}
 
 	if homeDir != "" {
+		resolved, err := resolveTempHomeDir(homeDir)
+		if err != nil {
+			fatal("failed to create temp session directory: %v", err)
+		}
+		homeDir = resolved
 		activeStateDir = homeDir
 		homeDirFlag = homeDir
 	} else {
@@ -801,6 +815,9 @@ func cmdStart(args []string) {
 	fmt.Printf("Debug URL: %s\n", debugURL)
 	if flags.stealth {
 		fmt.Println("Stealth mode enabled")
+	}
+	if homeDirFlag != "" {
+		fmt.Printf("Session: %s\n", homeDirFlag)
 	}
 }
 
