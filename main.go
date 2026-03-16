@@ -122,7 +122,7 @@ func resolveStateDir(mode scopeMode, workingDir string) string {
 		return filepath.Join(home, ".rodney")
 	default: // scopeAuto
 		localDir := filepath.Join(workingDir, ".rodney")
-		if _, err := os.Stat(filepath.Join(localDir, "state.json")); err == nil {
+		if _, err := os.Stat(localDir); err == nil {
 			return localDir
 		}
 		home, _ := os.UserHomeDir()
