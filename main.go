@@ -649,21 +649,22 @@ func parseStartFlags(args []string) (startFlags, error) {
 	return f, nil
 }
 
-// resolveProfileDir resolves a --profile value to a Chrome profile directory
-// name. It accepts any of:
+// resolveProfile resolves a --profile value to a Chrome profile directory name
+// and the Chrome data directory that contains it. It accepts any of:
 //   - A directory name directly (e.g. "Default", "Profile 1")
 //   - A display name from Chrome's UI (e.g. "Archie", "Jamie")
 //   - An email address (e.g. "archie@learningequality.org")
 //
-// Resolution reads the Local State JSON file that Chrome stores in its data
-// directory. The function checks multiple locations:
+// Resolution reads Chrome's Local State JSON file, checking multiple locations:
 //  1. The rodney chrome-data directory (dataDir)
 //  2. The rodney state/home directory (parent of dataDir)
 //  3. Standard system Chrome locations (~/.config/google-chrome, etc.)
 //
-// If no Local State file is found or the value doesn't match any profile,
-// it's returned as-is (assumed to be a directory name).
-func resolveProfileDir(dataDir, value string) string {
+// Returns (profileDirName, chromeDataDir). If the profile was found in a
+// system Chrome installation, chromeDataDir points there so the caller can
+// use it as --user-data-dir. If not found, returns (value, "") and the
+// caller should use its default data directory.
+func resolveProfile(dataDir, value string) (string, string) {
 	// Build candidate paths for Local State, in priority order
 	home, _ := os.UserHomeDir()
 	candidates := []string{
@@ -706,25 +707,26 @@ func resolveProfileDir(dataDir, value string) string {
 		if err := json.Unmarshal(data, &state); err != nil {
 			continue
 		}
+		chromeDir := filepath.Dir(path) // directory containing Local State
 		for dirName, info := range state.Profile.InfoCache {
 			// Exact directory name match (case-insensitive)
 			if strings.ToLower(dirName) == valueLower {
-				return dirName
+				return dirName, chromeDir
 			}
 			// Display name match (case-insensitive)
 			if strings.ToLower(info.Name) == valueLower {
 				fmt.Printf("Resolved profile %q to directory %q (display name: %q)\n", value, dirName, info.Name)
-				return dirName
+				return dirName, chromeDir
 			}
 			// Email match (case-insensitive)
 			if info.UserName != "" && strings.ToLower(info.UserName) == valueLower {
 				fmt.Printf("Resolved profile %q to directory %q (email: %s, display name: %q)\n", value, dirName, info.UserName, info.Name)
-				return dirName
+				return dirName, chromeDir
 			}
 		}
 	}
 
-	return value // No match found in any Local State; use as-is
+	return value, "" // No match found; use value as-is with default data dir
 }
 
 func cmdStart(args []string) {
@@ -748,14 +750,18 @@ func cmdStart(args []string) {
 
 	dataDir := filepath.Join(stateDir(), "chrome-data")
 	os.MkdirAll(dataDir, 0755)
+	var profileDir string
+
+	if flags.profile != "" {
+		profileDir, _ = resolveProfile(dataDir, flags.profile)
+	}
 
 	l := launcher.New().
 		Leakless(false).        // Keep Chrome alive after CLI exits
 		UserDataDir(dataDir).
 		Headless(headless)
 
-	if flags.profile != "" {
-		profileDir := resolveProfileDir(dataDir, flags.profile)
+	if profileDir != "" {
 		l = l.Set("profile-directory", profileDir)
 	}
 
