@@ -1,11 +1,13 @@
 package main
 
 import (
+	"crypto/rand"
 	_ "embed"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"net/http"
 	"net/url"
@@ -82,9 +84,10 @@ func cleanupSessionDir(dir string) {
 
 // extractScopeArgs scans args for --local/--global/--home-dir, removes them, and returns the mode and home dir.
 // If both --local and --global appear, the last one wins. --home-dir takes a path argument.
-func extractScopeArgs(args []string) (scopeMode, string, []string) {
+func extractScopeArgs(args []string) (scopeMode, string, string, []string) {
 	mode := scopeAuto
 	homeDir := ""
+	pageID := ""
 	var filtered []string
 	for i := 0; i < len(args); i++ {
 		switch {
@@ -97,11 +100,16 @@ func extractScopeArgs(args []string) (scopeMode, string, []string) {
 			i++ // skip the value
 		case strings.HasPrefix(args[i], "--home-dir="):
 			homeDir = args[i][len("--home-dir="):]
+		case args[i] == "--page" && i+1 < len(args):
+			pageID = args[i+1]
+			i++ // skip the value
+		case strings.HasPrefix(args[i], "--page="):
+			pageID = args[i][len("--page="):]
 		default:
 			filtered = append(filtered, args[i])
 		}
 	}
-	return mode, homeDir, filtered
+	return mode, homeDir, pageID, filtered
 }
 
 // resolveStateDir determines the state directory based on scope mode and working directory.
@@ -124,16 +132,20 @@ func resolveStateDir(mode scopeMode, workingDir string) string {
 
 // State persisted between CLI invocations
 type State struct {
-	DebugURL       string `json:"debug_url"`
-	ChromePID      int    `json:"chrome_pid"`
-	ActivePage     int    `json:"active_page"`  // index into pages list
-	DataDir        string `json:"data_dir"`
-	ProxyPID       int    `json:"proxy_pid,omitempty"`  // PID of auth proxy helper
-	ProxyPort      int    `json:"proxy_port,omitempty"` // local port of auth proxy
-	Stealth        bool   `json:"stealth,omitempty"`
-	ViewportWidth  int    `json:"viewport_width,omitempty"`
-	ViewportHeight int    `json:"viewport_height,omitempty"`
+	DebugURL       string            `json:"debug_url"`
+	ChromePID      int               `json:"chrome_pid"`
+	ActivePage     int               `json:"active_page"`  // index into pages list
+	DataDir        string            `json:"data_dir"`
+	ProxyPID       int               `json:"proxy_pid,omitempty"`  // PID of auth proxy helper
+	ProxyPort      int               `json:"proxy_port,omitempty"` // local port of auth proxy
+	Stealth        bool              `json:"stealth,omitempty"`
+	ViewportWidth  int               `json:"viewport_width,omitempty"`
+	ViewportHeight int               `json:"viewport_height,omitempty"`
+	PageIDs        map[string]string `json:"page_ids,omitempty"` // short ID -> Chrome TargetID
 }
+
+// activePageID is set by --page <id> flag, extracted globally in main().
+var activePageID string
 
 func stateDir() string {
 	if dir := os.Getenv("RODNEY_HOME"); dir != "" {
@@ -200,6 +212,21 @@ func getActivePage(browser *rod.Browser, s *State) (*rod.Page, error) {
 	if len(pages) == 0 {
 		return nil, fmt.Errorf("no pages open")
 	}
+
+	// If --page <id> was passed, resolve it to a TargetID
+	if activePageID != "" {
+		targetID, ok := s.PageIDs[activePageID]
+		if !ok {
+			return nil, fmt.Errorf("unknown page ID %q (use 'rodney pages' to list)", activePageID)
+		}
+		for _, p := range pages {
+			if string(p.TargetID) == targetID {
+				return p, nil
+			}
+		}
+		return nil, fmt.Errorf("page %q (target %s) no longer exists", activePageID, targetID)
+	}
+
 	idx := s.ActivePage
 	if idx < 0 || idx >= len(pages) {
 		idx = 0
@@ -209,6 +236,17 @@ func getActivePage(browser *rod.Browser, s *State) (*rod.Page, error) {
 
 func printUsage() {
 	fmt.Print(helpText)
+}
+
+// shortID generates a 6-character lowercase alphanumeric ID.
+func shortID() string {
+	const chars = "abcdefghijklmnopqrstuvwxyz0123456789"
+	b := make([]byte, 6)
+	for i := range b {
+		n, _ := rand.Int(rand.Reader, big.NewInt(int64(len(chars))))
+		b[i] = chars[n.Int64()]
+	}
+	return string(b)
 }
 
 func fatal(format string, args ...interface{}) {
@@ -222,8 +260,9 @@ func main() {
 		os.Exit(2)
 	}
 
-	// Extract --local/--global/--home-dir from all args before dispatching
-	mode, homeDir, cleanedArgs := extractScopeArgs(os.Args[1:])
+	// Extract --local/--global/--home-dir/--page from all args before dispatching
+	mode, homeDir, pageID, cleanedArgs := extractScopeArgs(os.Args[1:])
+	activePageID = pageID
 	if len(cleanedArgs) == 0 {
 		printUsage()
 		os.Exit(1)
@@ -1947,16 +1986,27 @@ func cmdPages(args []string) {
 	if err != nil {
 		fatal("failed to list pages: %v", err)
 	}
+	// Build reverse map: TargetID -> page ID
+	targetToID := make(map[string]string)
+	for id, tid := range s.PageIDs {
+		targetToID[tid] = id
+	}
+
 	for i, p := range pages {
 		marker := " "
 		if i == s.ActivePage {
 			marker = "*"
 		}
+		pageID := targetToID[string(p.TargetID)]
+		idStr := ""
+		if pageID != "" {
+			idStr = pageID + " "
+		}
 		info, _ := p.Info()
 		if info != nil {
-			fmt.Printf("%s [%d] %s - %s\n", marker, i, info.Title, info.URL)
+			fmt.Printf("%s [%d] %s%s - %s\n", marker, i, idStr, info.Title, info.URL)
 		} else {
-			fmt.Printf("%s [%d] (unknown)\n", marker, i)
+			fmt.Printf("%s [%d] %s(unknown)\n", marker, i, idStr)
 		}
 	}
 }
@@ -2012,23 +2062,35 @@ func cmdNewPage(args []string) {
 		}
 	}
 
-	var page *rod.Page
-	if s.Stealth {
-		// In stealth mode, create a blank page first so we can inject
-		// stealth scripts via addScriptToEvaluateOnNewDocument BEFORE
-		// any navigation occurs.
-		page = browser.MustPage("")
-		applyStealthToPage(page, browser, s)
-		if url != "" {
-			page.MustNavigate(url)
-			page.MustWaitLoad()
-		}
-	} else if url != "" {
-		page = browser.MustPage(url)
-		page.MustWaitLoad()
-	} else {
-		page = browser.MustPage("")
+	// Create page in a new window so it has independent visibility state.
+	// This prevents sites from detecting the page as "backgrounded" when
+	// another page is focused.
+	createResult, err := proto.TargetCreateTarget{
+		URL:       "about:blank",
+		NewWindow: true,
+	}.Call(browser)
+	if err != nil {
+		fatal("failed to create window: %v", err)
 	}
+	page, err := browser.PageFromTarget(createResult.TargetID)
+	if err != nil {
+		fatal("failed to get page: %v", err)
+	}
+
+	if s.Stealth {
+		applyStealthToPage(page, browser, s)
+	}
+	if url != "" {
+		page.MustNavigate(url)
+		page.MustWaitLoad()
+	}
+
+	// Generate a short random page ID and store the mapping
+	pageID := shortID()
+	if s.PageIDs == nil {
+		s.PageIDs = make(map[string]string)
+	}
+	s.PageIDs[pageID] = string(page.TargetID)
 
 	// Switch active to the new page
 	pages, _ := browser.Pages()
@@ -2042,7 +2104,9 @@ func cmdNewPage(args []string) {
 
 	info, _ := page.Info()
 	if info != nil {
-		fmt.Printf("Opened [%d] %s\n", s.ActivePage, info.URL)
+		fmt.Printf("%s %s\n", pageID, info.URL)
+	} else {
+		fmt.Printf("%s (blank)\n", pageID)
 	}
 }
 
@@ -2063,28 +2127,72 @@ func cmdClosePage(args []string) {
 		fatal("cannot close the last page")
 	}
 
-	idx := s.ActivePage
-	if len(args) > 0 {
-		idx, err = strconv.Atoi(args[0])
-		if err != nil {
-			fatal("invalid index: %v", err)
+	// Resolve which page to close: --page flag, argument (ID or index), or active
+	closeID := activePageID
+	if closeID == "" && len(args) > 0 {
+		closeID = args[0]
+	}
+
+	var closePage *rod.Page
+	if closeID != "" {
+		// Try as page ID first
+		if targetID, ok := s.PageIDs[closeID]; ok {
+			for _, p := range pages {
+				if string(p.TargetID) == targetID {
+					closePage = p
+					break
+				}
+			}
+			if closePage == nil {
+				fatal("page %q no longer exists", closeID)
+			}
+			delete(s.PageIDs, closeID)
+		} else {
+			// Fall back to numeric index
+			idx, err := strconv.Atoi(closeID)
+			if err != nil {
+				fatal("unknown page ID or invalid index: %q", closeID)
+			}
+			if idx < 0 || idx >= len(pages) {
+				fatal("page index %d out of range", idx)
+			}
+			closePage = pages[idx]
+			// Remove any page ID mapping for this target
+			for id, tid := range s.PageIDs {
+				if tid == string(closePage.TargetID) {
+					delete(s.PageIDs, id)
+					break
+				}
+			}
+		}
+	} else {
+		// Close active page
+		idx := s.ActivePage
+		if idx < 0 || idx >= len(pages) {
+			idx = 0
+		}
+		closePage = pages[idx]
+		// Remove any page ID mapping
+		for id, tid := range s.PageIDs {
+			if tid == string(closePage.TargetID) {
+				delete(s.PageIDs, id)
+				break
+			}
 		}
 	}
-	if idx < 0 || idx >= len(pages) {
-		fatal("page index %d out of range", idx)
-	}
 
-	pages[idx].MustClose()
+	closePage.MustClose()
 
 	// Adjust active page
-	if s.ActivePage >= len(pages)-1 {
-		s.ActivePage = len(pages) - 2
+	remaining, _ := browser.Pages()
+	if s.ActivePage >= len(remaining) {
+		s.ActivePage = len(remaining) - 1
 	}
 	if s.ActivePage < 0 {
 		s.ActivePage = 0
 	}
 	saveState(s)
-	fmt.Printf("Closed page %d\n", idx)
+	fmt.Printf("Closed page %s\n", closeID)
 }
 
 func cmdExists(args []string) {

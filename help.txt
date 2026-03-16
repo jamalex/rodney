@@ -44,11 +44,15 @@ Screenshots:
   rodney screenshot [-w N] [-h N] [file]  Take page screenshot
   rodney screenshot-el <sel> [f]  Screenshot an element
 
-Tabs:
-  rodney pages                    List all pages/tabs
-  rodney page <index>             Switch to page by index
-  rodney newpage [url]            Open a new page/tab
-  rodney closepage [index]        Close a page/tab
+Pages:
+  rodney pages                    List all pages (with IDs)
+  rodney page <index>             Switch active page by index
+  rodney newpage [url]            Open a new page in its own window, returns page ID
+  rodney closepage [id|index]     Close a page by ID or index
+
+  Use --page <id> on any command to target a specific page:
+    rodney newpage 'https://example.com' --local    # prints: abc123 https://example.com
+    rodney text '.title' --page abc123 --local       # runs on that page
 
 Element checks:
   rodney exists <selector>        Check if element exists (exit 1 if not)
@@ -65,6 +69,7 @@ Options:
   --local                         Use directory-scoped session (./.rodney/)
   --global                        Use global session (~/.rodney/)
   --home-dir <path|tmp>            Use specified directory (or "tmp" to auto-create)
+  --page <id>                     Target a specific page by ID (from newpage)
   --profile <name|email>          Chrome profile by directory, display name, or email
   --version                       Print version and exit
   --help, -h, help                Show this help message
