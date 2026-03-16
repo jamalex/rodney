@@ -87,7 +87,7 @@ func cleanupSessionDir(dir string) {
 func extractScopeArgs(args []string) (scopeMode, string, string, []string) {
 	mode := scopeAuto
 	homeDir := ""
-	pageID := ""
+	sessionID := ""
 	var filtered []string
 	for i := 0; i < len(args); i++ {
 		switch {
@@ -100,16 +100,16 @@ func extractScopeArgs(args []string) (scopeMode, string, string, []string) {
 			i++ // skip the value
 		case strings.HasPrefix(args[i], "--home-dir="):
 			homeDir = args[i][len("--home-dir="):]
-		case args[i] == "--page" && i+1 < len(args):
-			pageID = args[i+1]
+		case args[i] == "--session" && i+1 < len(args):
+			sessionID = args[i+1]
 			i++ // skip the value
-		case strings.HasPrefix(args[i], "--page="):
-			pageID = args[i][len("--page="):]
+		case strings.HasPrefix(args[i], "--session="):
+			sessionID = args[i][len("--session="):]
 		default:
 			filtered = append(filtered, args[i])
 		}
 	}
-	return mode, homeDir, pageID, filtered
+	return mode, homeDir, sessionID, filtered
 }
 
 // resolveStateDir determines the state directory based on scope mode and working directory.
@@ -141,11 +141,11 @@ type State struct {
 	Stealth        bool              `json:"stealth,omitempty"`
 	ViewportWidth  int               `json:"viewport_width,omitempty"`
 	ViewportHeight int               `json:"viewport_height,omitempty"`
-	PageIDs        map[string]string `json:"page_ids,omitempty"` // short ID -> Chrome TargetID
+	SessionIDs        map[string]string `json:"session_ids,omitempty"` // short ID -> Chrome TargetID
 }
 
-// activePageID is set by --page <id> flag, extracted globally in main().
-var activePageID string
+// activeSessionID is set by --page <id> flag, extracted globally in main().
+var activeSessionID string
 
 func stateDir() string {
 	if dir := os.Getenv("RODNEY_HOME"); dir != "" {
@@ -214,17 +214,17 @@ func getActivePage(browser *rod.Browser, s *State) (*rod.Page, error) {
 	}
 
 	// If --page <id> was passed, resolve it to a TargetID
-	if activePageID != "" {
-		targetID, ok := s.PageIDs[activePageID]
+	if activeSessionID != "" {
+		targetID, ok := s.SessionIDs[activeSessionID]
 		if !ok {
-			return nil, fmt.Errorf("unknown page ID %q (use 'rodney pages' to list)", activePageID)
+			return nil, fmt.Errorf("unknown session ID %q (use 'rodney pages' to list)", activeSessionID)
 		}
 		for _, p := range pages {
 			if string(p.TargetID) == targetID {
 				return p, nil
 			}
 		}
-		return nil, fmt.Errorf("page %q (target %s) no longer exists", activePageID, targetID)
+		return nil, fmt.Errorf("page %q (target %s) no longer exists", activeSessionID, targetID)
 	}
 
 	idx := s.ActivePage
@@ -261,8 +261,8 @@ func main() {
 	}
 
 	// Extract --local/--global/--home-dir/--page from all args before dispatching
-	mode, homeDir, pageID, cleanedArgs := extractScopeArgs(os.Args[1:])
-	activePageID = pageID
+	mode, homeDir, sessionID, cleanedArgs := extractScopeArgs(os.Args[1:])
+	activeSessionID = sessionID
 	if len(cleanedArgs) == 0 {
 		printUsage()
 		os.Exit(1)
@@ -1986,9 +1986,9 @@ func cmdPages(args []string) {
 	if err != nil {
 		fatal("failed to list pages: %v", err)
 	}
-	// Build reverse map: TargetID -> page ID
+	// Build reverse map: TargetID -> session ID
 	targetToID := make(map[string]string)
-	for id, tid := range s.PageIDs {
+	for id, tid := range s.SessionIDs {
 		targetToID[tid] = id
 	}
 
@@ -1997,10 +1997,10 @@ func cmdPages(args []string) {
 		if i == s.ActivePage {
 			marker = "*"
 		}
-		pageID := targetToID[string(p.TargetID)]
+		sid := targetToID[string(p.TargetID)]
 		idStr := ""
-		if pageID != "" {
-			idStr = pageID + " "
+		if sid != "" {
+			idStr = sid + " "
 		}
 		info, _ := p.Info()
 		if info != nil {
@@ -2085,12 +2085,12 @@ func cmdNewPage(args []string) {
 		page.MustWaitLoad()
 	}
 
-	// Generate a short random page ID and store the mapping
-	pageID := shortID()
-	if s.PageIDs == nil {
-		s.PageIDs = make(map[string]string)
+	// Generate a short random session ID and store the mapping
+	sessionID := shortID()
+	if s.SessionIDs == nil {
+		s.SessionIDs = make(map[string]string)
 	}
-	s.PageIDs[pageID] = string(page.TargetID)
+	s.SessionIDs[sessionID] = string(page.TargetID)
 
 	// Switch active to the new page
 	pages, _ := browser.Pages()
@@ -2104,9 +2104,9 @@ func cmdNewPage(args []string) {
 
 	info, _ := page.Info()
 	if info != nil {
-		fmt.Printf("%s %s\n", pageID, info.URL)
+		fmt.Printf("%s %s\n", sessionID, info.URL)
 	} else {
-		fmt.Printf("%s (blank)\n", pageID)
+		fmt.Printf("%s (blank)\n", sessionID)
 	}
 }
 
@@ -2128,15 +2128,15 @@ func cmdClosePage(args []string) {
 	}
 
 	// Resolve which page to close: --page flag, argument (ID or index), or active
-	closeID := activePageID
+	closeID := activeSessionID
 	if closeID == "" && len(args) > 0 {
 		closeID = args[0]
 	}
 
 	var closePage *rod.Page
 	if closeID != "" {
-		// Try as page ID first
-		if targetID, ok := s.PageIDs[closeID]; ok {
+		// Try as session ID first
+		if targetID, ok := s.SessionIDs[closeID]; ok {
 			for _, p := range pages {
 				if string(p.TargetID) == targetID {
 					closePage = p
@@ -2146,21 +2146,21 @@ func cmdClosePage(args []string) {
 			if closePage == nil {
 				fatal("page %q no longer exists", closeID)
 			}
-			delete(s.PageIDs, closeID)
+			delete(s.SessionIDs, closeID)
 		} else {
 			// Fall back to numeric index
 			idx, err := strconv.Atoi(closeID)
 			if err != nil {
-				fatal("unknown page ID or invalid index: %q", closeID)
+				fatal("unknown session ID or invalid index: %q", closeID)
 			}
 			if idx < 0 || idx >= len(pages) {
 				fatal("page index %d out of range", idx)
 			}
 			closePage = pages[idx]
-			// Remove any page ID mapping for this target
-			for id, tid := range s.PageIDs {
+			// Remove any session ID mapping for this target
+			for id, tid := range s.SessionIDs {
 				if tid == string(closePage.TargetID) {
-					delete(s.PageIDs, id)
+					delete(s.SessionIDs, id)
 					break
 				}
 			}
@@ -2172,10 +2172,10 @@ func cmdClosePage(args []string) {
 			idx = 0
 		}
 		closePage = pages[idx]
-		// Remove any page ID mapping
-		for id, tid := range s.PageIDs {
+		// Remove any session ID mapping
+		for id, tid := range s.SessionIDs {
 			if tid == string(closePage.TargetID) {
-				delete(s.PageIDs, id)
+				delete(s.SessionIDs, id)
 				break
 			}
 		}
