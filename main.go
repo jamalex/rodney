@@ -650,12 +650,14 @@ type startFlags struct {
 
 // parseStartFlags parses the arguments to "rodney start".
 func parseStartFlags(args []string) (startFlags, error) {
-	f := startFlags{headless: true, stealth: true}
-	usage := "usage: rodney start [--show] [--no-stealth] [--viewport WxH] [--profile NAME] [--insecure | -k]"
+	f := startFlags{headless: false, stealth: true}
+	usage := "usage: rodney start [--headless] [--no-stealth] [--viewport WxH] [--profile NAME] [--insecure | -k]"
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--show":
-			f.headless = false
+			// accepted for backwards compat, already the default
+		case "--headless":
+			f.headless = true
 		case "--insecure", "-k":
 			f.ignoreCertErrors = true
 		case "--stealth":
