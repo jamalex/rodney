@@ -1,7 +1,7 @@
 rodney - Chrome automation from the command line
 
 Browser lifecycle:
-  rodney start [--show] [--stealth] [--profile NAME] [--insecure | -k]  Launch Chrome (headless by default)
+  rodney start [--show] [--no-stealth] [--profile NAME] [--insecure | -k]  Launch Chrome (headless+stealth by default)
   rodney connect <host:port>      Connect to existing Chrome on remote debug port
   rodney stop                     Shut down Chrome
   rodney status                   Show browser status
@@ -74,9 +74,10 @@ Options:
   --version                       Print version and exit
   --help, -h, help                Show this help message
 
-By default, commands auto-detect: if ./.rodney/state.json exists in the
-current directory, the local session is used; otherwise the global session.
-Use "rodney start --local" to create a directory-scoped session.
+Session options (--local, --global, --home-dir, --profile) only need to be
+passed to "rodney start". Subsequent commands auto-detect the session:
+if ./.rodney/state.json exists, the local session is used; otherwise global.
+Stealth mode is on by default; use --no-stealth to disable.
 
 Environment:
   RODNEY_HOME                     Override data directory (default: ~/.rodney)

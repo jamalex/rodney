@@ -650,7 +650,8 @@ type startFlags struct {
 
 // parseStartFlags parses the arguments to "rodney start".
 func parseStartFlags(args []string) (startFlags, error) {
-	f := startFlags{headless: true}
+	f := startFlags{headless: true, stealth: true}
+	usage := "usage: rodney start [--show] [--no-stealth] [--viewport WxH] [--profile NAME] [--insecure | -k]"
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--show":
@@ -658,11 +659,13 @@ func parseStartFlags(args []string) (startFlags, error) {
 		case "--insecure", "-k":
 			f.ignoreCertErrors = true
 		case "--stealth":
-			f.stealth = true
+			// accepted for backwards compat, already the default
+		case "--no-stealth":
+			f.stealth = false
 		case "--viewport":
 			i++
 			if i >= len(args) {
-				return f, fmt.Errorf("missing value for --viewport\nusage: rodney start [--show] [--stealth] [--viewport WxH] [--profile NAME] [--insecure | -k]")
+				return f, fmt.Errorf("missing value for --viewport\n%s", usage)
 			}
 			parts := strings.SplitN(args[i], "x", 2)
 			if len(parts) != 2 {
@@ -678,11 +681,11 @@ func parseStartFlags(args []string) (startFlags, error) {
 		case "--profile":
 			i++
 			if i >= len(args) {
-				return f, fmt.Errorf("missing value for --profile\nusage: rodney start [--show] [--stealth] [--viewport WxH] [--profile NAME] [--insecure | -k]")
+				return f, fmt.Errorf("missing value for --profile\n%s", usage)
 			}
 			f.profile = args[i]
 		default:
-			return f, fmt.Errorf("unknown flag: %s\nusage: rodney start [--show] [--stealth] [--viewport WxH] [--profile NAME] [--insecure | -k]", args[i])
+			return f, fmt.Errorf("unknown flag: %s\n%s", args[i], usage)
 		}
 	}
 	return f, nil
