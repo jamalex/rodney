@@ -606,6 +606,7 @@ type startFlags struct {
 	ignoreCertErrors bool
 	stealth          bool
 	viewport         string
+	profile          string
 }
 
 // parseStartFlags parses the arguments to "rodney start".
@@ -622,7 +623,7 @@ func parseStartFlags(args []string) (startFlags, error) {
 		case "--viewport":
 			i++
 			if i >= len(args) {
-				return f, fmt.Errorf("missing value for --viewport\nusage: rodney start [--show] [--stealth] [--viewport WxH] [--insecure | -k]")
+				return f, fmt.Errorf("missing value for --viewport\nusage: rodney start [--show] [--stealth] [--viewport WxH] [--profile NAME] [--insecure | -k]")
 			}
 			parts := strings.SplitN(args[i], "x", 2)
 			if len(parts) != 2 {
@@ -635,11 +636,95 @@ func parseStartFlags(args []string) (startFlags, error) {
 				return f, fmt.Errorf("invalid viewport height %q: %v", parts[1], err)
 			}
 			f.viewport = args[i]
+		case "--profile":
+			i++
+			if i >= len(args) {
+				return f, fmt.Errorf("missing value for --profile\nusage: rodney start [--show] [--stealth] [--viewport WxH] [--profile NAME] [--insecure | -k]")
+			}
+			f.profile = args[i]
 		default:
-			return f, fmt.Errorf("unknown flag: %s\nusage: rodney start [--show] [--stealth] [--viewport WxH] [--insecure | -k]", args[i])
+			return f, fmt.Errorf("unknown flag: %s\nusage: rodney start [--show] [--stealth] [--viewport WxH] [--profile NAME] [--insecure | -k]", args[i])
 		}
 	}
 	return f, nil
+}
+
+// resolveProfileDir resolves a --profile value to a Chrome profile directory
+// name. It accepts any of:
+//   - A directory name directly (e.g. "Default", "Profile 1")
+//   - A display name from Chrome's UI (e.g. "Archie", "Jamie")
+//   - An email address (e.g. "archie@learningequality.org")
+//
+// Resolution reads the Local State JSON file that Chrome stores in its data
+// directory. The function checks multiple locations:
+//  1. The rodney chrome-data directory (dataDir)
+//  2. The rodney state/home directory (parent of dataDir)
+//  3. Standard system Chrome locations (~/.config/google-chrome, etc.)
+//
+// If no Local State file is found or the value doesn't match any profile,
+// it's returned as-is (assumed to be a directory name).
+func resolveProfileDir(dataDir, value string) string {
+	// Build candidate paths for Local State, in priority order
+	home, _ := os.UserHomeDir()
+	candidates := []string{
+		filepath.Join(dataDir, "Local State"),
+		filepath.Join(filepath.Dir(dataDir), "Local State"),
+	}
+	if home != "" {
+		candidates = append(candidates,
+			filepath.Join(home, ".config", "google-chrome", "Local State"),
+			filepath.Join(home, ".config", "chromium", "Local State"),
+		)
+		if runtime.GOOS == "darwin" {
+			candidates = append(candidates,
+				filepath.Join(home, "Library", "Application Support", "Google", "Chrome", "Local State"),
+			)
+		}
+	}
+
+	var data []byte
+	for _, path := range candidates {
+		var err error
+		data, err = os.ReadFile(path)
+		if err == nil {
+			break
+		}
+	}
+	if data == nil {
+		return value // No Local State found anywhere
+	}
+
+	var state struct {
+		Profile struct {
+			InfoCache map[string]struct {
+				Name     string `json:"name"`
+				UserName string `json:"user_name"`
+			} `json:"info_cache"`
+		} `json:"profile"`
+	}
+	if err := json.Unmarshal(data, &state); err != nil {
+		return value
+	}
+
+	valueLower := strings.ToLower(value)
+	for dirName, info := range state.Profile.InfoCache {
+		// Exact directory name match (case-insensitive)
+		if strings.ToLower(dirName) == valueLower {
+			return dirName
+		}
+		// Display name match (case-insensitive)
+		if strings.ToLower(info.Name) == valueLower {
+			fmt.Printf("Resolved profile %q to directory %q (display name: %q)\n", value, dirName, info.Name)
+			return dirName
+		}
+		// Email match (case-insensitive)
+		if info.UserName != "" && strings.ToLower(info.UserName) == valueLower {
+			fmt.Printf("Resolved profile %q to directory %q (email: %s, display name: %q)\n", value, dirName, info.UserName, info.Name)
+			return dirName
+		}
+	}
+
+	return value // No match found; use as-is
 }
 
 func cmdStart(args []string) {
@@ -668,6 +753,11 @@ func cmdStart(args []string) {
 		Leakless(false).        // Keep Chrome alive after CLI exits
 		UserDataDir(dataDir).
 		Headless(headless)
+
+	if flags.profile != "" {
+		profileDir := resolveProfileDir(dataDir, flags.profile)
+		l = l.Set("profile-directory", profileDir)
+	}
 
 	// --no-sandbox is only needed when running as root (e.g., Docker
 	// containers). On normal desktops Chrome's sandbox provides important

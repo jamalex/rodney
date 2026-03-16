@@ -1,7 +1,7 @@
 rodney - Chrome automation from the command line
 
 Browser lifecycle:
-  rodney start [--show] [--stealth] [--insecure | -k]  Launch Chrome (headless by default)
+  rodney start [--show] [--stealth] [--profile NAME] [--insecure | -k]  Launch Chrome (headless by default)
   rodney connect <host:port>      Connect to existing Chrome on remote debug port
   rodney stop                     Shut down Chrome
   rodney status                   Show browser status
@@ -65,6 +65,7 @@ Options:
   --local                         Use directory-scoped session (./.rodney/)
   --global                        Use global session (~/.rodney/)
   --home-dir <path|tmp>            Use specified directory (or "tmp" to auto-create)
+  --profile <name|email>          Chrome profile by directory, display name, or email
   --version                       Print version and exit
   --help, -h, help                Show this help message
 
