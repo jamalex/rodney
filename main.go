@@ -682,49 +682,49 @@ func resolveProfileDir(dataDir, value string) string {
 		}
 	}
 
-	var data []byte
-	for _, path := range candidates {
-		var err error
-		data, err = os.ReadFile(path)
-		if err == nil {
-			break
-		}
+	type profileInfo struct {
+		Name     string `json:"name"`
+		UserName string `json:"user_name"`
 	}
-	if data == nil {
-		return value // No Local State found anywhere
-	}
-
-	var state struct {
+	type localState struct {
 		Profile struct {
-			InfoCache map[string]struct {
-				Name     string `json:"name"`
-				UserName string `json:"user_name"`
-			} `json:"info_cache"`
+			InfoCache map[string]profileInfo `json:"info_cache"`
 		} `json:"profile"`
-	}
-	if err := json.Unmarshal(data, &state); err != nil {
-		return value
 	}
 
 	valueLower := strings.ToLower(value)
-	for dirName, info := range state.Profile.InfoCache {
-		// Exact directory name match (case-insensitive)
-		if strings.ToLower(dirName) == valueLower {
-			return dirName
+
+	// Search each Local State file until we find a match. We don't stop
+	// at the first readable file because rodney's own chrome-data may have
+	// a bare-bones Local State with only a generic "Default" profile.
+	for _, path := range candidates {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
 		}
-		// Display name match (case-insensitive)
-		if strings.ToLower(info.Name) == valueLower {
-			fmt.Printf("Resolved profile %q to directory %q (display name: %q)\n", value, dirName, info.Name)
-			return dirName
+		var state localState
+		if err := json.Unmarshal(data, &state); err != nil {
+			continue
 		}
-		// Email match (case-insensitive)
-		if info.UserName != "" && strings.ToLower(info.UserName) == valueLower {
-			fmt.Printf("Resolved profile %q to directory %q (email: %s, display name: %q)\n", value, dirName, info.UserName, info.Name)
-			return dirName
+		for dirName, info := range state.Profile.InfoCache {
+			// Exact directory name match (case-insensitive)
+			if strings.ToLower(dirName) == valueLower {
+				return dirName
+			}
+			// Display name match (case-insensitive)
+			if strings.ToLower(info.Name) == valueLower {
+				fmt.Printf("Resolved profile %q to directory %q (display name: %q)\n", value, dirName, info.Name)
+				return dirName
+			}
+			// Email match (case-insensitive)
+			if info.UserName != "" && strings.ToLower(info.UserName) == valueLower {
+				fmt.Printf("Resolved profile %q to directory %q (email: %s, display name: %q)\n", value, dirName, info.UserName, info.Name)
+				return dirName
+			}
 		}
 	}
 
-	return value // No match found; use as-is
+	return value // No match found in any Local State; use as-is
 }
 
 func cmdStart(args []string) {
