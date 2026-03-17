@@ -455,6 +455,8 @@ func main() {
 	switch cmd {
 	case "_proxy":
 		cmdInternalProxy(args) // hidden: runs the auth proxy helper
+	case "_netmonitor":
+		cmdNetMonitor(args) // hidden: runs the network monitor
 	case "newsession":
 		cmdNewSession(args)
 	case "endsession":
@@ -531,6 +533,12 @@ func main() {
 		cmdAXFind(args)
 	case "ax-node":
 		cmdAXNode(args)
+	case "net-log":
+		cmdNetLog(args)
+	case "net-body":
+		cmdNetBody(args)
+	case "net-clear":
+		cmdNetClear(args)
 	// Removed commands with helpful error messages
 	case "start":
 		fatal("unknown command: start (did you mean newsession?)")
