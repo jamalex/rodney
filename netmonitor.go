@@ -107,6 +107,32 @@ func (w *jsonlWriter) writeBodyTruncated(seq int, kind string, ext string, body 
 	return w.writeBody(seq, kind, ext, body)
 }
 
+// appendWithBody atomically assigns seq, writes body file, and appends the event.
+func (w *jsonlWriter) appendWithBody(e NetEvent, kind, ext string, body []byte) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.seq++
+	e.Seq = w.seq
+	if e.TS == "" {
+		e.TS = time.Now().UTC().Format(time.RFC3339Nano)
+	}
+
+	// Write body file
+	bodiesDir := filepath.Join(w.sessionDir, "bodies")
+	os.MkdirAll(bodiesDir, 0755)
+	relPath := fmt.Sprintf("bodies/%06d_%s%s", w.seq, kind, ext)
+	fullPath := filepath.Join(w.sessionDir, relPath)
+	if err := os.WriteFile(fullPath, body, 0644); err == nil {
+		e.BodyFile = relPath
+	}
+
+	data, err := json.Marshal(e)
+	if err != nil {
+		return
+	}
+	w.file.Write(append(data, '\n'))
+}
+
 func (w *jsonlWriter) clear() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -473,14 +499,32 @@ func (m *netMonitor) monitorPage(page *rod.Page, sessionID string) {
 	// Listen for events on this page
 	page.EachEvent(
 		func(e *proto.NetworkRequestWillBeSent) {
-			w.append(NetEvent{
+			evt := NetEvent{
 				Type:      "request",
 				ID:        string(e.RequestID),
 				Method:    e.Request.Method,
 				URL:       e.Request.URL,
 				Headers:   flattenHeaders(e.Request.Headers),
 				Initiator: string(e.Initiator.Type),
-			})
+			}
+			// Capture request body for POST/PUT/PATCH
+			if e.Request.PostData != "" && (e.Request.Method == "POST" || e.Request.Method == "PUT" || e.Request.Method == "PATCH") {
+				body := []byte(e.Request.PostData)
+				// Determine content type from request headers
+				ct := ""
+				if h := flattenHeaders(e.Request.Headers); h != nil {
+					ct = h["content-type"]
+					if ct == "" {
+						ct = h["Content-Type"]
+					}
+				}
+				if isCaptureEligible(ct, m.captureTypes) {
+					ext := bodyFileExt(ct)
+					w.appendWithBody(evt, "req", ext, body)
+					return
+				}
+			}
+			w.append(evt)
 		},
 		func(e *proto.NetworkResponseReceived) {
 			// Buffer MIME type for use when body is captured in loadingFinished
@@ -497,6 +541,11 @@ func (m *netMonitor) monitorPage(page *rod.Page, sessionID string) {
 		func(e *proto.NetworkLoadingFinished) {
 			// Eagerly capture response body and write the combined response event
 			m.captureResponseBody(page, sessionID, string(e.RequestID), w)
+		},
+		func(e *proto.NetworkLoadingFailed) {
+			m.mu.Lock()
+			delete(m.responseMeta, string(e.RequestID))
+			m.mu.Unlock()
 		},
 		func(e *proto.NetworkWebSocketCreated) {
 			w.append(NetEvent{
@@ -582,8 +631,6 @@ func (m *netMonitor) captureResponseBody(page *rod.Page, sessionID, requestID st
 	// Check MIME eligibility
 	if isCaptureEligible(meta.mime, m.captureTypes) {
 		ext := bodyFileExt(meta.mime)
-		// Reserve the seq that will be used for this event
-		nextSeq := w.seq + 1
 
 		originalSize := len(content)
 		truncated := false
@@ -592,14 +639,12 @@ func (m *netMonitor) captureResponseBody(page *rod.Page, sessionID, requestID st
 			truncated = true
 		}
 
-		bodyFile, writeErr := w.writeBody(nextSeq, "resp", ext, content)
-		if writeErr == nil {
-			event.BodyFile = bodyFile
-			if truncated {
-				event.Truncated = true
-				event.OriginalSize = originalSize
-			}
+		if truncated {
+			event.Truncated = true
+			event.OriginalSize = originalSize
 		}
+		w.appendWithBody(event, "resp", ext, content)
+		return
 	}
 
 	w.append(event)
@@ -620,13 +665,8 @@ func (m *netMonitor) writeWSFrame(w *jsonlWriter, requestID, dir string, respons
 
 	// Save frame data as body if text-based (opcode 1 = text frame)
 	if int(response.Opcode) == 1 {
-		w.mu.Lock()
-		nextSeq := w.seq + 1
-		w.mu.Unlock()
-		bodyFile, err := w.writeBody(nextSeq, dir, ".txt", []byte(response.PayloadData))
-		if err == nil {
-			e.BodyFile = bodyFile
-		}
+		w.appendWithBody(e, dir, ".txt", []byte(response.PayloadData))
+		return
 	}
 	w.append(e)
 }

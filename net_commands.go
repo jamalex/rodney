@@ -293,6 +293,7 @@ func tailFollow(path string, flags netLogFlags) {
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
+			fmt.Fprintln(os.Stderr, "waiting for network log to appear...")
 			for {
 				time.Sleep(500 * time.Millisecond)
 				f, err = os.Open(path)

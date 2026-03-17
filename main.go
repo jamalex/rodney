@@ -1364,13 +1364,19 @@ func cmdNewSession(args []string) {
 
 	// Launch network monitor if capture is enabled and monitor isn't running
 	if !flags.noCapture {
-		if s.MonitorPID == 0 || !isProcessAlive(s.MonitorPID) {
-			monPID := launchNetMonitor(dataDir)
-			s.MonitorPID = monPID
-			if err := saveState(s); err != nil {
-				fatal("save state after monitor launch: %v", err)
+		withFileLock(stateLockPath(), func() error {
+			// Re-read state under lock
+			fresh, loadErr := loadState()
+			if loadErr != nil {
+				return nil // non-fatal
 			}
-		}
+			if fresh.MonitorPID == 0 || !isProcessAlive(fresh.MonitorPID) {
+				monPID := launchNetMonitor(dataDir)
+				fresh.MonitorPID = monPID
+				return atomicWriteJSON(statePath(), fresh)
+			}
+			return nil
+		})
 	}
 
 	fmt.Println(sessionID)
