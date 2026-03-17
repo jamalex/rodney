@@ -132,6 +132,38 @@ func resolveStateDir(mode scopeMode, workingDir string) string {
 	}
 }
 
+// resolveNewSessionDir determines the data directory for a new session.
+// If no .rodney/ exists locally and no explicit scope is given, creates a temp dir.
+func resolveNewSessionDir(mode scopeMode, workingDir string, homeDir string) string {
+	if homeDir != "" {
+		if homeDir == "tmp" {
+			dir, err := os.MkdirTemp(os.TempDir(), "rodney-")
+			if err != nil {
+				fatal("failed to create temp dir: %v", err)
+			}
+			return dir
+		}
+		return homeDir
+	}
+	switch mode {
+	case scopeLocal:
+		return filepath.Join(workingDir, ".rodney")
+	case scopeGlobal:
+		home, _ := os.UserHomeDir()
+		return filepath.Join(home, ".rodney")
+	default: // scopeAuto
+		localDir := filepath.Join(workingDir, ".rodney")
+		if info, err := os.Stat(localDir); err == nil && info.IsDir() {
+			return localDir
+		}
+		dir, err := os.MkdirTemp(os.TempDir(), "rodney-")
+		if err != nil {
+			fatal("failed to create temp dir: %v", err)
+		}
+		return dir
+	}
+}
+
 // SessionInfo holds per-session state within a browser instance.
 type SessionInfo struct {
 	TargetID       string `json:"target_id"`
@@ -165,9 +197,6 @@ type State struct {
 var activeSessionID string
 
 func stateDir() string {
-	if dir := os.Getenv("RODNEY_HOME"); dir != "" {
-		return dir
-	}
 	if activeStateDir != "" {
 		return activeStateDir
 	}

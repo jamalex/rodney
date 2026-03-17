@@ -852,11 +852,13 @@ func TestCleanupSessionDir_NoopForNonexistent(t *testing.T) {
 }
 
 // =====================
-// RODNEY_HOME env var tests
+// stateDir tests
 // =====================
 
 func TestStateDir_Default(t *testing.T) {
-	t.Setenv("RODNEY_HOME", "")
+	old := activeStateDir
+	activeStateDir = ""
+	defer func() { activeStateDir = old }()
 	home, _ := os.UserHomeDir()
 	want := home + "/.rodney"
 	got := stateDir()
@@ -865,13 +867,57 @@ func TestStateDir_Default(t *testing.T) {
 	}
 }
 
-func TestStateDir_EnvVar(t *testing.T) {
+func TestResolveNewSessionDir_LocalExists(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("RODNEY_HOME", dir)
-	got := stateDir()
-	if got != dir {
-		t.Errorf("stateDir() = %q, want %q", got, dir)
+	localDir := filepath.Join(dir, ".rodney")
+	os.MkdirAll(localDir, 0755)
+	got := resolveNewSessionDir(scopeAuto, dir, "")
+	if got != localDir {
+		t.Fatalf("expected %q, got %q", localDir, got)
 	}
+}
+
+func TestResolveNewSessionDir_NoLocal_CreatesTmp(t *testing.T) {
+	dir := t.TempDir()
+	got := resolveNewSessionDir(scopeAuto, dir, "")
+	if !strings.HasPrefix(got, filepath.Join(os.TempDir(), "rodney-")) {
+		t.Fatalf("expected temp dir starting with rodney-, got %q", got)
+	}
+	info, err := os.Stat(got)
+	if err != nil {
+		t.Fatalf("temp dir not created: %v", err)
+	}
+	if !info.IsDir() {
+		t.Fatal("not a directory")
+	}
+	os.RemoveAll(got)
+}
+
+func TestResolveNewSessionDir_ExplicitLocal(t *testing.T) {
+	dir := t.TempDir()
+	got := resolveNewSessionDir(scopeLocal, dir, "")
+	expected := filepath.Join(dir, ".rodney")
+	if got != expected {
+		t.Fatalf("expected %q, got %q", expected, got)
+	}
+}
+
+func TestResolveNewSessionDir_ExplicitHomeDir(t *testing.T) {
+	dir := t.TempDir()
+	customDir := filepath.Join(dir, "custom")
+	got := resolveNewSessionDir(scopeAuto, dir, customDir)
+	if got != customDir {
+		t.Fatalf("expected %q, got %q", customDir, got)
+	}
+}
+
+func TestResolveNewSessionDir_HomeDirTmp(t *testing.T) {
+	dir := t.TempDir()
+	got := resolveNewSessionDir(scopeAuto, dir, "tmp")
+	if !strings.HasPrefix(got, filepath.Join(os.TempDir(), "rodney-")) {
+		t.Fatalf("expected temp dir, got %q", got)
+	}
+	os.RemoveAll(got)
 }
 
 func TestSessionInfo_JSONRoundTrip(t *testing.T) {
