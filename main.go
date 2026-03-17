@@ -50,7 +50,7 @@ var activeStateDir string
 var activeScopeMode scopeMode
 
 // homeDirFlag is set when --home-dir is explicitly passed on the command line.
-// Used by cmdStop to clean up the session directory.
+// Used by cmdNewSession to resolve the session data directory.
 var homeDirFlag string
 
 // waitForProcessExit polls until the given PID is no longer running, or timeout.
@@ -69,23 +69,6 @@ func waitForProcessExit(pid int, timeout time.Duration) {
 	}
 }
 
-// resolveTempHomeDir handles the special --home-dir value "tmp" by creating
-// a temporary directory. For any other value, it returns the path unchanged.
-func resolveTempHomeDir(dir string) (string, error) {
-	if dir == "tmp" {
-		return os.MkdirTemp("/tmp", "rodney-session-")
-	}
-	return dir, nil
-}
-
-// cleanupSessionDir removes a session directory. Only called for directories
-// created via --home-dir (never for default or env-var-based directories).
-func cleanupSessionDir(dir string) {
-	if dir == "" {
-		return
-	}
-	os.RemoveAll(dir)
-}
 
 // extractScopeArgs scans args for --local/--global/--home-dir, removes them, and returns the mode and home dir.
 // If both --local and --global appear, the last one wins. --home-dir takes a path argument.
@@ -188,12 +171,6 @@ type State struct {
 	ProxyServer     string                 `json:"proxy_server,omitempty"`
 	ProxyConfigHash string                 `json:"proxy_config_hash,omitempty"`
 	Sessions        map[string]SessionInfo `json:"sessions,omitempty"`
-
-	// Deprecated: kept for compilation until old commands are removed later
-	ActivePage     int               `json:"active_page,omitempty"`
-	ViewportWidth  int               `json:"viewport_width,omitempty"`
-	ViewportHeight int               `json:"viewport_height,omitempty"`
-	SessionIDs     map[string]string `json:"session_ids,omitempty"`
 }
 
 // activeSessionID is set by --session <id> flag or RODNEY_SESSION env var.
@@ -233,7 +210,7 @@ func stateLockPath() string {
 func loadState() (*State, error) {
 	data, err := os.ReadFile(statePath())
 	if err != nil {
-		return nil, fmt.Errorf("no browser session (run 'rodney start' first)")
+		return nil, fmt.Errorf("no browser session (run 'rodney newsession' first)")
 	}
 	var s State
 	if err := json.Unmarshal(data, &s); err != nil {
@@ -398,35 +375,25 @@ func connectBrowser(s *State) (*rod.Browser, error) {
 	return browser, nil
 }
 
-// getActivePage returns the currently active page
+// getActivePage returns the page for the current session.
 func getActivePage(browser *rod.Browser, s *State) (*rod.Page, error) {
+	if activeSessionID == "" {
+		return nil, fmt.Errorf("session ID required; pass --session <id>")
+	}
+	si, ok := s.Sessions[activeSessionID]
+	if !ok {
+		return nil, fmt.Errorf("session %q not found in state", activeSessionID)
+	}
 	pages, err := browser.Pages()
 	if err != nil {
 		return nil, fmt.Errorf("failed to list pages: %w", err)
 	}
-	if len(pages) == 0 {
-		return nil, fmt.Errorf("no pages open")
-	}
-
-	// If --page <id> was passed, resolve it to a TargetID
-	if activeSessionID != "" {
-		targetID, ok := s.SessionIDs[activeSessionID]
-		if !ok {
-			return nil, fmt.Errorf("unknown session ID %q (use 'rodney pages' to list)", activeSessionID)
+	for _, p := range pages {
+		if string(p.TargetID) == si.TargetID {
+			return p, nil
 		}
-		for _, p := range pages {
-			if string(p.TargetID) == targetID {
-				return p, nil
-			}
-		}
-		return nil, fmt.Errorf("page %q (target %s) no longer exists", activeSessionID, targetID)
 	}
-
-	idx := s.ActivePage
-	if idx < 0 || idx >= len(pages) {
-		idx = 0
-	}
-	return pages[idx], nil
+	return nil, fmt.Errorf("page for session %q no longer exists", activeSessionID)
 }
 
 func printUsage() {
@@ -468,11 +435,6 @@ func main() {
 	}
 
 	if homeDir != "" {
-		resolved, err := resolveTempHomeDir(homeDir)
-		if err != nil {
-			fatal("failed to create temp session directory: %v", err)
-		}
-		homeDir = resolved
 		activeStateDir = homeDir
 		homeDirFlag = homeDir
 	} else {
@@ -491,14 +453,12 @@ func main() {
 	switch cmd {
 	case "_proxy":
 		cmdInternalProxy(args) // hidden: runs the auth proxy helper
-	case "start":
-		cmdStart(args)
-	case "connect":
-		cmdConnect(args)
-	case "stop":
-		cmdStop(args)
-	case "status":
-		cmdStatus(args)
+	case "newsession":
+		cmdNewSession(args)
+	case "endsession":
+		cmdEndSession(args)
+	case "sessions":
+		cmdSessions(args)
 	case "open":
 		cmdOpen(args)
 	case "back":
@@ -555,14 +515,6 @@ func main() {
 		cmdScreenshot(args)
 	case "screenshot-el":
 		cmdScreenshotEl(args)
-	case "pages":
-		cmdPages(args)
-	case "page":
-		cmdPage(args)
-	case "newpage":
-		cmdNewPage(args)
-	case "closepage":
-		cmdClosePage(args)
 	case "exists":
 		cmdExists(args)
 	case "count":
@@ -577,10 +529,23 @@ func main() {
 		cmdAXFind(args)
 	case "ax-node":
 		cmdAXNode(args)
-	case "endsession":
-		cmdEndSession(args)
-	case "sessions":
-		cmdSessions(args)
+	// Removed commands with helpful error messages
+	case "start":
+		fatal("unknown command: start (did you mean newsession?)")
+	case "stop":
+		fatal("unknown command: stop (did you mean endsession?)")
+	case "connect":
+		fatal("unknown command: connect (removed; use newsession)")
+	case "pages":
+		fatal("unknown command: pages (did you mean sessions?)")
+	case "page":
+		fatal("unknown command: page (removed; use --session <id>)")
+	case "newpage":
+		fatal("unknown command: newpage (did you mean newsession?)")
+	case "closepage":
+		fatal("unknown command: closepage (did you mean endsession?)")
+	case "status":
+		fatal("unknown command: status (did you mean sessions?)")
 	case "help", "-h", "--help":
 		printUsage()
 		os.Exit(0)
@@ -822,16 +787,29 @@ func applyStealthToPage(page *rod.Page, browser *rod.Browser, stealthEnabled boo
 	}
 }
 
-// withPage loads state, connects, and returns the active page.
-// Caller should NOT close the browser (we just disconnect).
+// withPage resolves the session from the registry, loads state, connects to
+// the browser, and returns the active page. Caller should NOT close the browser.
 func withPage() (*State, *rod.Browser, *rod.Page) {
+	sid := resolveSessionID(activeSessionID, "")
+	if sid == "" {
+		fatal("session ID required; pass --session <id>")
+	}
+	activeSessionID = sid
+
+	// Look up data dir from registry
+	dataDir, err := registryLookup(registryPath(), sid)
+	if err != nil {
+		fatal("session %q not found", sid)
+	}
+	activeStateDir = dataDir
+
 	s, err := loadState()
 	if err != nil {
-		fatal("%v", err)
+		fatal("no browser running for session %q: %v", sid, err)
 	}
 	browser, err := connectBrowser(s)
 	if err != nil {
-		fatal("%v", err)
+		fatal("browser for session %q is no longer running: %v", sid, err)
 	}
 	page, err := getActivePage(browser, s)
 	if err != nil {
@@ -854,11 +832,11 @@ type startFlags struct {
 	explicitFlags    map[string]bool // tracks which flags were explicitly passed
 }
 
-// parseStartFlags parses the arguments to "rodney start".
+// parseStartFlags parses the arguments to "rodney newsession".
 func parseStartFlags(args []string) (startFlags, error) {
 	f := startFlags{headless: false, stealth: true}
 	f.explicitFlags = make(map[string]bool)
-	usage := "usage: rodney start [--headless] [--no-stealth] [--viewport WxH] [--profile NAME] [--insecure | -k]"
+	usage := "usage: rodney newsession [--headless] [--no-stealth] [--viewport WxH] [--profile NAME] [--insecure | -k]"
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--show":
@@ -1172,67 +1150,6 @@ func launchChrome(flags *startFlags, dataDir string) launchResult {
 		proxyHash:     proxyHash,
 		vpWidth:       vpWidth,
 		vpHeight:      vpHeight,
-	}
-}
-
-func cmdStart(args []string) {
-	flags, err := parseStartFlags(args)
-	if err != nil {
-		fatal("%s", err)
-	}
-
-	// Check if already running
-	if s, err := loadState(); err == nil {
-		// Try connecting
-		if b, err := connectBrowser(s); err == nil {
-			b.MustClose()
-			// It was actually running, warn
-			removeState()
-		}
-	}
-
-	result := launchChrome(&flags, stateDir())
-
-	state := &State{
-		DebugURL:        result.debugURL,
-		ChromePID:       result.pid,
-		ActivePage:      0,
-		DataDir:         result.chromeDataDir,
-		Headless:        flags.headless,
-		Stealth:         flags.stealth,
-		Insecure:        flags.ignoreCertErrors,
-		Profile:         flags.profile,
-		ProxyPID:        result.proxyPID,
-		ProxyPort:       result.proxyPort,
-		ProxyServer:     result.proxyServer,
-		ProxyConfigHash: result.proxyHash,
-		ViewportWidth:   result.vpWidth,
-		ViewportHeight:  result.vpHeight,
-	}
-
-	if err := saveState(state); err != nil {
-		fatal("failed to save state: %v", err)
-	}
-
-	if flags.stealth {
-		browser, err := connectBrowser(state)
-		if err == nil {
-			pages, err := browser.Pages()
-			if err == nil {
-				for _, p := range pages {
-					applyStealthToPage(p, browser, true, result.vpWidth, result.vpHeight)
-				}
-			}
-		}
-	}
-
-	fmt.Printf("Chrome started (PID %d)\n", result.pid)
-	fmt.Printf("Debug URL: %s\n", result.debugURL)
-	if flags.stealth {
-		fmt.Println("Stealth mode enabled")
-	}
-	if homeDirFlag != "" {
-		fmt.Printf("Session: %s\n", homeDirFlag)
 	}
 }
 
@@ -1690,112 +1607,6 @@ func cmdSessions(args []string) {
 	}
 }
 
-func cmdConnect(args []string) {
-	if len(args) < 1 {
-		fatal("usage: rodney connect <host:port>")
-	}
-	hostport := args[0]
-	if _, _, err := net.SplitHostPort(hostport); err != nil {
-		fatal("argument must be host:port (e.g. localhost:9222): %s", hostport)
-	}
-
-	// Fetch the WebSocket debugger URL from Chrome's /json/version endpoint
-	resp, err := http.Get("http://" + hostport + "/json/version")
-	if err != nil {
-		fatal("could not reach browser at %s: %v", hostport, err)
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		fatal("failed to read response: %v", err)
-	}
-	var info struct {
-		WebSocketDebuggerURL string `json:"webSocketDebuggerUrl"`
-	}
-	if err := json.Unmarshal(body, &info); err != nil || info.WebSocketDebuggerURL == "" {
-		fatal("unexpected response from browser at %s", hostport)
-	}
-
-	// Verify the connection works
-	browser := rod.New().ControlURL(info.WebSocketDebuggerURL)
-	if err := browser.Connect(); err != nil {
-		fatal("could not connect to browser: %v", err)
-	}
-
-	// ChromePID=0 signals that we don't own this browser (stop won't kill it)
-	state := &State{
-		DebugURL:   info.WebSocketDebuggerURL,
-		ChromePID:  0,
-		ActivePage: 0,
-	}
-	if err := saveState(state); err != nil {
-		fatal("failed to save state: %v", err)
-	}
-
-	fmt.Printf("Connected to browser at %s\n", hostport)
-	fmt.Printf("Debug URL: %s\n", info.WebSocketDebuggerURL)
-}
-
-func cmdStop(args []string) {
-	s, err := loadState()
-	if err != nil {
-		fatal("%v", err)
-	}
-	browser, err := connectBrowser(s)
-	if err != nil {
-		// Try to kill by PID only if we launched the browser
-		if s.ChromePID > 0 {
-			proc, err := os.FindProcess(s.ChromePID)
-			if err == nil {
-				proc.Signal(syscall.SIGTERM)
-			}
-		}
-	} else if s.ChromePID > 0 {
-		// Only close (and kill) the browser if we launched it
-		browser.MustClose()
-	}
-	// If ChromePID==0 we connected to an external browser; just clear state without closing it
-	// Also kill the proxy helper if running
-	if s.ProxyPID > 0 {
-		if proc, err := os.FindProcess(s.ProxyPID); err == nil {
-			proc.Signal(syscall.SIGTERM)
-		}
-	}
-	removeState()
-	fmt.Println("Chrome stopped")
-	if homeDirFlag != "" {
-		// Wait for Chrome to fully exit before removing the data directory
-		if s.ChromePID > 0 {
-			waitForProcessExit(s.ChromePID, 5*time.Second)
-		}
-		cleanupSessionDir(homeDirFlag)
-	}
-}
-
-func cmdStatus(args []string) {
-	s, err := loadState()
-	if err != nil {
-		fmt.Println("No active browser session")
-		return
-	}
-	browser, err := connectBrowser(s)
-	if err != nil {
-		fmt.Printf("Browser not responding (PID %d, state may be stale)\n", s.ChromePID)
-		return
-	}
-	pages, _ := browser.Pages()
-	fmt.Printf("Browser running (PID %d)\n", s.ChromePID)
-	fmt.Printf("Debug URL: %s\n", s.DebugURL)
-	fmt.Printf("Pages: %d\n", len(pages))
-	fmt.Printf("Active page: %d\n", s.ActivePage)
-	if page, err := getActivePage(browser, s); err == nil {
-		info, _ := page.Info()
-		if info != nil {
-			fmt.Printf("Current: %s - %s\n", info.Title, info.URL)
-		}
-	}
-}
-
 func cmdOpen(args []string) {
 	if len(args) < 1 {
 		fatal("usage: rodney open <url>")
@@ -1806,48 +1617,20 @@ func cmdOpen(args []string) {
 		url = "http://" + url
 	}
 
-	s, err := loadState()
-	if err != nil {
-		fatal("%v", err)
-	}
-	browser, err := connectBrowser(s)
-	if err != nil {
-		fatal("%v", err)
-	}
+	s, browser, page := withPage()
 
-	// If no pages exist, create one
-	pages, _ := browser.Pages()
-	var page *rod.Page
-	if len(pages) == 0 {
-		if s.Stealth {
-			// In stealth mode, create blank page first so stealth scripts
-			// are injected before any navigation occurs.
-			page = browser.MustPage("")
-			applyStealthToPage(page, browser, true, s.ViewportWidth, s.ViewportHeight)
-			if err := page.Navigate(url); err != nil {
-				fatal("navigation failed: %v", err)
-			}
-		} else {
-			page = browser.MustPage(url)
+	// Re-apply stealth on each navigation. The CDP session from the
+	// previous CLI invocation has disconnected, so session-scoped
+	// state like Emulation.setUserAgentOverride is lost.
+	if s.Stealth {
+		vpW, vpH := 0, 0
+		if si, ok := s.Sessions[activeSessionID]; ok {
+			vpW, vpH = si.ViewportWidth, si.ViewportHeight
 		}
-		s.ActivePage = 0
-		if err := saveState(s); err != nil {
-			fatal("failed to save state: %v", err)
-		}
-	} else {
-		page, err = getActivePage(browser, s)
-		if err != nil {
-			fatal("%v", err)
-		}
-		// Re-apply stealth on each navigation. The CDP session from the
-		// previous CLI invocation has disconnected, so session-scoped
-		// state like Emulation.setUserAgentOverride is lost.
-		if s.Stealth {
-			applyStealthToPage(page, browser, true, s.ViewportWidth, s.ViewportHeight)
-		}
-		if err := page.Navigate(url); err != nil {
-			fatal("navigation failed: %v", err)
-		}
+		applyStealthToPage(page, browser, true, vpW, vpH)
+	}
+	if err := page.Navigate(url); err != nil {
+		fatal("navigation failed: %v", err)
 	}
 	page.MustWaitLoad()
 	info, _ := page.Info()
@@ -2707,232 +2490,6 @@ func cmdScreenshotEl(args []string) {
 		fatal("failed to write screenshot: %v", err)
 	}
 	fmt.Printf("Saved %s (%d bytes)\n", file, len(data))
-}
-
-func cmdPages(args []string) {
-	s, err := loadState()
-	if err != nil {
-		fatal("%v", err)
-	}
-	browser, err := connectBrowser(s)
-	if err != nil {
-		fatal("%v", err)
-	}
-	pages, err := browser.Pages()
-	if err != nil {
-		fatal("failed to list pages: %v", err)
-	}
-	// Build reverse map: TargetID -> session ID
-	targetToID := make(map[string]string)
-	for id, tid := range s.SessionIDs {
-		targetToID[tid] = id
-	}
-
-	for i, p := range pages {
-		marker := " "
-		if i == s.ActivePage {
-			marker = "*"
-		}
-		sid := targetToID[string(p.TargetID)]
-		idStr := ""
-		if sid != "" {
-			idStr = sid + " "
-		}
-		info, _ := p.Info()
-		if info != nil {
-			fmt.Printf("%s [%d] %s%s - %s\n", marker, i, idStr, info.Title, info.URL)
-		} else {
-			fmt.Printf("%s [%d] %s(unknown)\n", marker, i, idStr)
-		}
-	}
-}
-
-func cmdPage(args []string) {
-	if len(args) < 1 {
-		fatal("usage: rodney page <index>")
-	}
-	idx, err := strconv.Atoi(args[0])
-	if err != nil {
-		fatal("invalid index: %v", err)
-	}
-	s, err := loadState()
-	if err != nil {
-		fatal("%v", err)
-	}
-	browser, err := connectBrowser(s)
-	if err != nil {
-		fatal("%v", err)
-	}
-	pages, err := browser.Pages()
-	if err != nil {
-		fatal("failed to list pages: %v", err)
-	}
-	if idx < 0 || idx >= len(pages) {
-		fatal("page index %d out of range (0-%d)", idx, len(pages)-1)
-	}
-	s.ActivePage = idx
-	if err := saveState(s); err != nil {
-		fatal("failed to save state: %v", err)
-	}
-	info, _ := pages[idx].Info()
-	if info != nil {
-		fmt.Printf("Switched to [%d] %s - %s\n", idx, info.Title, info.URL)
-	}
-}
-
-func cmdNewPage(args []string) {
-	s, err := loadState()
-	if err != nil {
-		fatal("%v", err)
-	}
-	browser, err := connectBrowser(s)
-	if err != nil {
-		fatal("%v", err)
-	}
-
-	url := ""
-	if len(args) > 0 {
-		url = args[0]
-		if !strings.Contains(url, "://") {
-			url = "http://" + url
-		}
-	}
-
-	// Create page in a new window so it has independent visibility state.
-	// This prevents sites from detecting the page as "backgrounded" when
-	// another page is focused.
-	createResult, err := proto.TargetCreateTarget{
-		URL:       "about:blank",
-		NewWindow: true,
-	}.Call(browser)
-	if err != nil {
-		fatal("failed to create window: %v", err)
-	}
-	page, err := browser.PageFromTarget(createResult.TargetID)
-	if err != nil {
-		fatal("failed to get page: %v", err)
-	}
-
-	if s.Stealth {
-		applyStealthToPage(page, browser, true, s.ViewportWidth, s.ViewportHeight)
-	}
-	if url != "" {
-		page.MustNavigate(url)
-		page.MustWaitLoad()
-	}
-
-	// Generate a short random session ID and store the mapping
-	sessionID := shortID()
-	if s.SessionIDs == nil {
-		s.SessionIDs = make(map[string]string)
-	}
-	s.SessionIDs[sessionID] = string(page.TargetID)
-
-	// Switch active to the new page
-	pages, _ := browser.Pages()
-	for i, p := range pages {
-		if p.TargetID == page.TargetID {
-			s.ActivePage = i
-			break
-		}
-	}
-	if err := saveState(s); err != nil {
-		fatal("failed to save state: %v", err)
-	}
-
-	info, _ := page.Info()
-	if info != nil {
-		fmt.Printf("%s %s\n", sessionID, info.URL)
-	} else {
-		fmt.Printf("%s (blank)\n", sessionID)
-	}
-}
-
-func cmdClosePage(args []string) {
-	s, err := loadState()
-	if err != nil {
-		fatal("%v", err)
-	}
-	browser, err := connectBrowser(s)
-	if err != nil {
-		fatal("%v", err)
-	}
-	pages, err := browser.Pages()
-	if err != nil {
-		fatal("failed to list pages: %v", err)
-	}
-	if len(pages) <= 1 {
-		fatal("cannot close the last page")
-	}
-
-	// Resolve which page to close: --page flag, argument (ID or index), or active
-	closeID := activeSessionID
-	if closeID == "" && len(args) > 0 {
-		closeID = args[0]
-	}
-
-	var closePage *rod.Page
-	if closeID != "" {
-		// Try as session ID first
-		if targetID, ok := s.SessionIDs[closeID]; ok {
-			for _, p := range pages {
-				if string(p.TargetID) == targetID {
-					closePage = p
-					break
-				}
-			}
-			if closePage == nil {
-				fatal("page %q no longer exists", closeID)
-			}
-			delete(s.SessionIDs, closeID)
-		} else {
-			// Fall back to numeric index
-			idx, err := strconv.Atoi(closeID)
-			if err != nil {
-				fatal("unknown session ID or invalid index: %q", closeID)
-			}
-			if idx < 0 || idx >= len(pages) {
-				fatal("page index %d out of range", idx)
-			}
-			closePage = pages[idx]
-			// Remove any session ID mapping for this target
-			for id, tid := range s.SessionIDs {
-				if tid == string(closePage.TargetID) {
-					delete(s.SessionIDs, id)
-					break
-				}
-			}
-		}
-	} else {
-		// Close active page
-		idx := s.ActivePage
-		if idx < 0 || idx >= len(pages) {
-			idx = 0
-		}
-		closePage = pages[idx]
-		// Remove any session ID mapping
-		for id, tid := range s.SessionIDs {
-			if tid == string(closePage.TargetID) {
-				delete(s.SessionIDs, id)
-				break
-			}
-		}
-	}
-
-	closePage.MustClose()
-
-	// Adjust active page
-	remaining, _ := browser.Pages()
-	if s.ActivePage >= len(remaining) {
-		s.ActivePage = len(remaining) - 1
-	}
-	if s.ActivePage < 0 {
-		s.ActivePage = 0
-	}
-	if err := saveState(s); err != nil {
-		fatal("failed to save state: %v", err)
-	}
-	fmt.Printf("Closed page %s\n", closeID)
 }
 
 func cmdExists(args []string) {

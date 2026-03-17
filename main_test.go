@@ -745,34 +745,6 @@ func TestExtractScopeArgs_HomeDirMissingValue(t *testing.T) {
 	}
 }
 
-func TestResolveTempHomeDir_CreatesTempDir(t *testing.T) {
-	dir, err := resolveTempHomeDir("tmp")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	defer os.RemoveAll(dir)
-
-	if !strings.HasPrefix(dir, "/tmp/rodney-session-") {
-		t.Errorf("expected /tmp/rodney-session-* prefix, got %q", dir)
-	}
-	info, err := os.Stat(dir)
-	if err != nil {
-		t.Fatalf("temp dir not created: %v", err)
-	}
-	if !info.IsDir() {
-		t.Errorf("expected directory, got file")
-	}
-}
-
-func TestResolveTempHomeDir_PassthroughForRealPath(t *testing.T) {
-	dir, err := resolveTempHomeDir("/tmp/my-custom-session")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if dir != "/tmp/my-custom-session" {
-		t.Errorf("expected passthrough of real path, got %q", dir)
-	}
-}
 
 func TestResolveStateDir_Global(t *testing.T) {
 	dir := resolveStateDir(scopeGlobal, "/some/working/dir")
@@ -828,28 +800,6 @@ func TestResolveStateDir_LocalUsesWorkingDir(t *testing.T) {
 // --home-dir cleanup on stop tests
 // =====================
 
-func TestCleanupSessionDir_RemovesExplicitHomeDir(t *testing.T) {
-	dir := t.TempDir()
-	// Create some session files like a real session would have
-	os.MkdirAll(filepath.Join(dir, "chrome-data"), 0755)
-	os.WriteFile(filepath.Join(dir, "state.json"), []byte(`{}`), 0644)
-
-	cleanupSessionDir(dir)
-
-	if _, err := os.Stat(dir); !os.IsNotExist(err) {
-		t.Errorf("expected directory %q to be removed, but it still exists", dir)
-	}
-}
-
-func TestCleanupSessionDir_NoopForEmptyString(t *testing.T) {
-	// Should not panic or error when called with empty string
-	cleanupSessionDir("")
-}
-
-func TestCleanupSessionDir_NoopForNonexistent(t *testing.T) {
-	// Should not panic or error for a path that doesn't exist
-	cleanupSessionDir("/tmp/rodney-nonexistent-session-xyz")
-}
 
 // =====================
 // stateDir tests
@@ -1778,7 +1728,7 @@ func handleStealthCheck(w http.ResponseWriter, r *http.Request) {
 // =====================
 
 // launchStealthBrowser creates a browser with stealth config for smoke tests.
-// Mirrors what cmdStart --stealth does: uses CDP script injection instead of
+// Mirrors what newsession --stealth does: uses CDP script injection instead of
 // extensions, and uses --headless=new for proper stealth support.
 func launchStealthBrowser(t *testing.T) *rod.Browser {
 	t.Helper()
@@ -4840,7 +4790,7 @@ func TestStealthCtx_Live_WikipediaSearch(t *testing.T) {
 	page.MustNavigate("https://en.wikipedia.org/wiki/Main_Page")
 	page.MustWaitLoad()
 
-	sc := getStealthCtx(page, &State{ViewportWidth: 1920, ViewportHeight: 1080})
+	sc := getStealthCtx(page, &State{})
 
 	// Find the search input
 	searchID, err := sc.element("#searchInput", 10*time.Second)
@@ -4892,7 +4842,7 @@ func TestStealthCtx_Live_HackerNewsHeadlines(t *testing.T) {
 	page.MustNavigate("https://news.ycombinator.com/")
 	page.MustWaitLoad()
 
-	sc := getStealthCtx(page, &State{ViewportWidth: 1920, ViewportHeight: 1080})
+	sc := getStealthCtx(page, &State{})
 
 	// Query all headline links
 	nodeIDs, err := sc.elements(".titleline", 10*time.Second)
@@ -4921,7 +4871,7 @@ func TestStealthCtx_Live_GitHubRepoPage(t *testing.T) {
 	page.MustNavigate("https://github.com/go-rod/rod")
 	page.MustWaitLoad()
 
-	sc := getStealthCtx(page, &State{ViewportWidth: 1920, ViewportHeight: 1080})
+	sc := getStealthCtx(page, &State{})
 
 	// Verify page loaded by checking for README or repo description
 	time.Sleep(2 * time.Second)
@@ -4952,7 +4902,7 @@ func TestStealthCtx_Live_StackOverflow(t *testing.T) {
 	page.MustNavigate("https://stackoverflow.com/questions/tagged/go")
 	page.MustWaitLoad()
 
-	sc := getStealthCtx(page, &State{ViewportWidth: 1920, ViewportHeight: 1080})
+	sc := getStealthCtx(page, &State{})
 	time.Sleep(3 * time.Second)
 
 	// Try to find question titles (may fail on cookie consent overlay)
@@ -4982,7 +4932,7 @@ func TestStealthCtx_Live_HTTPBin(t *testing.T) {
 	page.MustNavigate("https://httpbin.org/get")
 	page.MustWaitLoad()
 
-	sc := getStealthCtx(page, &State{ViewportWidth: 1920, ViewportHeight: 1080})
+	sc := getStealthCtx(page, &State{})
 	time.Sleep(2 * time.Second)
 
 	// httpbin.org/get returns JSON — verify body contains expected JSON structure

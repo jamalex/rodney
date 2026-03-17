@@ -45,19 +45,16 @@ func newStealthCtx(page *rod.Page, vpWidth, vpHeight int) *stealthCtx {
 }
 
 // getStealthCtx returns the cached stealthCtx for a page, creating one if needed.
-// Viewport dimensions are resolved from the active session in s.Sessions, falling
-// back to the deprecated top-level State viewport fields.
+// Viewport dimensions are resolved from the active session in s.Sessions.
 func getStealthCtx(page *rod.Page, s *State) *stealthCtx {
 	key := page.TargetID
 	if v, ok := stealthCtxMap.Load(key); ok {
 		return v.(*stealthCtx)
 	}
-	vpW, vpH := s.ViewportWidth, s.ViewportHeight
+	vpW, vpH := 0, 0
 	if activeSessionID != "" {
 		if si, ok := s.Sessions[activeSessionID]; ok {
-			if si.ViewportWidth > 0 && si.ViewportHeight > 0 {
-				vpW, vpH = si.ViewportWidth, si.ViewportHeight
-			}
+			vpW, vpH = si.ViewportWidth, si.ViewportHeight
 		}
 	}
 	sc := newStealthCtx(page, vpW, vpH)
