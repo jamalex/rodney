@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strconv"
@@ -208,6 +209,34 @@ func bodyFileExt(mime string) string {
 	}
 
 	return ".body"
+}
+
+// isProcessAlive checks if a PID is still running.
+func isProcessAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	return proc.Signal(syscall.Signal(0)) == nil
+}
+
+// launchNetMonitor starts the _netmonitor background process.
+func launchNetMonitor(dataDir string) int {
+	exe, _ := os.Executable()
+	args := []string{"_netmonitor", dataDir}
+	cmd := exec.Command(exe, args...)
+	setSysProcAttr(cmd)
+	if err := cmd.Start(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to start network monitor: %v\n", err)
+		return 0
+	}
+	pid := cmd.Process.Pid
+	cmd.Process.Release()
+	time.Sleep(200 * time.Millisecond)
+	return pid
 }
 
 // --- Task 7 & 8: _netmonitor background process and user interaction capture ---

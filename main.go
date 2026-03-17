@@ -1296,12 +1296,24 @@ func cmdNewSession(args []string) {
 		TargetID:       string(page.TargetID),
 		ViewportWidth:  vw,
 		ViewportHeight: vh,
+		NoCapture:      flags.noCapture,
 	}
 	if err := saveState(s); err != nil {
 		fatal("save state: %v", err)
 	}
 	if err := registryAdd(registryPath(), registryLockPath(), sessionID, dataDir); err != nil {
 		fatal("registry add: %v", err)
+	}
+
+	// Launch network monitor if capture is enabled and monitor isn't running
+	if !flags.noCapture {
+		if s.MonitorPID == 0 || !isProcessAlive(s.MonitorPID) {
+			monPID := launchNetMonitor(dataDir)
+			s.MonitorPID = monPID
+			if err := saveState(s); err != nil {
+				fatal("save state after monitor launch: %v", err)
+			}
+		}
 	}
 
 	fmt.Println(sessionID)
