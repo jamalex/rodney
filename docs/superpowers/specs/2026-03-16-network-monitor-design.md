@@ -28,14 +28,14 @@ The monitor reads `state.json` from its data directory to get the Chrome debug U
 
 1. Enables `Network` domain events (request/response lifecycle, WebSocket frames).
 2. Enables `Page` domain events (navigation, load lifecycle).
-3. Creates an isolated world via `Page.addScriptToEvaluateOnNewDocument` with `worldName: "__rodney_monitor"` for user interaction capture.
-4. Registers a `Runtime.addBinding` scoped to the isolated world for receiving user interaction events from the injected script.
+3. Creates an isolated world via `Page.addScriptToEvaluateOnNewDocument` with `worldName: "__rodney_monitor"` for user interaction capture. This is separate from the `"rodney"` isolated world used by stealth command execution in `stealth_exec.go`; both are invisible to the main world and do not interfere with each other.
+4. Registers `Runtime.addBinding` with `name: "__rodneyEvent"` and `executionContextName: "__rodney_monitor"` for receiving user interaction events from the injected script.
 
 ### Per-Session Opt-Out
 
-`SessionInfo` gains a `Capture bool` field (default true; set to false via `--no-capture` on `newsession`). The monitor attaches to all targets but only enables Network/Page events and injects user interaction listeners on sessions where `Capture` is true. Sessions with `--no-capture` get no `net/<session-id>/` directory.
+`SessionInfo` gains a `NoCapture bool` field (default false, meaning capture is enabled). Set to true via `--no-capture` on `newsession`. The monitor attaches to all targets but only enables Network/Page events and injects user interaction listeners on sessions where `!NoCapture`. Sessions with `--no-capture` get no `net/<session-id>/` directory.
 
-If all sessions in a data dir have `Capture: false`, the monitor is not launched.
+If all sessions in a data dir have `NoCapture: true`, the monitor is not launched.
 
 ## Data Capture
 
@@ -52,7 +52,7 @@ Captured via CDP `Network` domain:
 | `Network.webSocketFrameReceived` | `ws-frame` | `id`, `dir:"recv"`, `opcode`, `size`, `bodyFile` |
 | `Network.webSocketClosed` | `ws-close` | `id` |
 
-Response bodies are captured eagerly on `Network.loadingFinished` via `Network.getResponseBody`, to avoid Chrome evicting them from its internal cache.
+Response bodies are captured eagerly on `Network.loadingFinished` via `Network.getResponseBody`, to avoid Chrome evicting them from its internal cache. If `Network.getResponseBody` fails (e.g., redirect, service worker response without cache, eviction), the `response` entry is still written but without a `bodyFile` field. A `"bodyError":"<reason>"` field is included for diagnostics.
 
 ### Page Lifecycle Events
 
@@ -60,13 +60,14 @@ Captured via CDP `Page` domain:
 
 | CDP Event | JSONL `type` | Key Fields |
 |-----------|-------------|------------|
-| `Page.frameNavigated` | `page-navigated` | `url`, `transitionType` (typed, link, reload, form_submit, etc.) |
+| `Page.frameRequestedNavigation` | `page-navigation-requested` | `url`, `reason` (formSubmissionGet, formSubmissionPost, anchorClick, scriptInitiated, reload, etc.) |
+| `Page.frameNavigated` | `page-navigated` | `url` |
 | `Page.navigatedWithinDocument` | `page-spa-navigated` | `url` |
 | `Page.domContentEventFired` | `page-dom-ready` | |
 | `Page.loadEventFired` | `page-loaded` | |
 | `Page.frameStartedLoading` | `page-loading` | |
 
-The `transitionType` on `page-navigated` distinguishes user typing a URL in the address bar (`typed`) from link clicks (`link`), form submissions (`form_submit`), reloads (`reload`), etc.
+Navigation cause is captured via `Page.frameRequestedNavigation`, which fires before the navigation and carries a `reason` field distinguishing user-typed URLs, link clicks, form submissions, script-initiated navigations, reloads, etc. `Page.frameNavigated` fires after the navigation completes and provides the final URL. Both are recorded as separate events, giving the agent both the intent and the result.
 
 ### User Interaction Events
 
@@ -87,9 +88,14 @@ Captured via isolated world event listeners. The monitor injects a script into t
 
 ### Rodney Command Interaction Markers
 
-When a rodney CLI command performs a browser action, it sends a pre-action marker to the monitor via IPC. The monitor writes this to the JSONL and uses it for attribution: the next user interaction event within a short window (~2 seconds) on that session is tagged with `"source":"rodney"` to distinguish it from a truly user-initiated action.
+When a rodney CLI command performs a browser action, it sends a pre-action marker to the monitor via IPC. The monitor writes this to the JSONL and uses it for attribution: subsequent DOM interaction events on the same session and same target element (matched by selector) within a short window (~2 seconds) are tagged with `"source":"rodney"` to distinguish them from truly user-initiated actions.
 
 Commands that send markers: `open`, `click`, `input`, `clear`, `select`, `submit`, `hover`, `focus`, `js`, `back`, `forward`, `reload`, `file`.
+
+**Attribution limitations**: This is a best-effort heuristic. Edge cases where attribution may be inaccurate:
+- A rodney action that triggers cascading events on different elements (e.g., click causes focus change on another element) -- only events matching the original target selector are attributed.
+- A human interacting with the same element within the attribution window immediately after a rodney command -- the human action may be incorrectly attributed to rodney.
+- A rodney `js` command that triggers DOM events indirectly -- the monitor records the `js` interaction marker but cannot attribute subsequent DOM events since there is no target selector to match.
 
 Example JSONL showing attribution:
 
@@ -101,15 +107,26 @@ Example JSONL showing attribution:
 
 ## IPC: CLI to Monitor
 
-The monitor listens on a unix domain socket at `<data-dir>/net/monitor.sock`. CLI commands connect, write a single newline-terminated JSON message, and disconnect (fire-and-forget):
+The monitor listens on a unix domain socket at `<data-dir>/net/monitor.sock`. CLI commands connect, write a single newline-terminated JSON message, and disconnect (fire-and-forget).
 
+**Message types:**
+
+Interaction marker (sent by CLI commands before performing browser actions):
 ```json
 {"session":"abc123","type":"interaction","cmd":"click","args":["#load-more"]}
 ```
 
+Clear request (sent by `net-clear`):
+```json
+{"session":"abc123","type":"clear"}
+```
+The monitor handles `clear` by closing the session's JSONL file handle, truncating it, deleting the `bodies/` directory, resetting the sequence counter, and reopening the file.
+
 The monitor adds `seq` and `ts` when writing to the JSONL, ensuring consistent ordering with network and user events.
 
 If the socket is absent or the write fails, the CLI command proceeds normally. A warning is printed to stderr (`warning: network monitor not running, interaction not recorded`) and the command attempts to restart the monitor. The interaction marker for the triggering command is lost, but subsequent commands are captured.
+
+**`net-log --follow`** works by tailing the JSONL file directly (polling for new lines), not via the IPC socket. This keeps the IPC protocol simple and unidirectional.
 
 ## Disk Layout
 
@@ -150,8 +167,9 @@ Example:
 {"seq":5,"ts":"2026-03-16T14:30:05.000Z","type":"interaction","cmd":"click","args":["#load-more"],"source":"rodney"}
 {"seq":6,"ts":"2026-03-16T14:30:05.200Z","type":"user-click","selector":"button.load-more","x":450,"y":320,"source":"rodney"}
 {"seq":7,"ts":"2026-03-16T14:30:06.000Z","type":"user-input","selector":"input#search","value":"hello world"}
-{"seq":8,"ts":"2026-03-16T14:30:06.500Z","type":"page-navigated","url":"https://example.com/search?q=hello+world","transitionType":"form_submit"}
-{"seq":9,"ts":"2026-03-16T14:30:07.000Z","type":"page-loaded"}
+{"seq":8,"ts":"2026-03-16T14:30:06.400Z","type":"page-navigation-requested","url":"https://example.com/search?q=hello+world","reason":"formSubmissionGet"}
+{"seq":9,"ts":"2026-03-16T14:30:06.500Z","type":"page-navigated","url":"https://example.com/search?q=hello+world"}
+{"seq":10,"ts":"2026-03-16T14:30:07.000Z","type":"page-loaded"}
 ```
 
 ### Body File Rules
@@ -169,15 +187,17 @@ Configurable via `--capture-types` on `newsession`:
 - `--capture-types=all` captures everything including binary
 - `--capture-types=json,html,png` captures specific types
 
+These are per-data-dir settings (since there is one monitor per data dir). They are passed as command-line arguments to `_netmonitor` and apply to all capture-enabled sessions in that browser. If different sessions need different capture settings, use separate data dirs.
+
 **File extensions**: Derived from the MIME type (`application/json` becomes `.json`, `text/html` becomes `.html`, etc.). Falls back to `.body` for unknown types.
 
-**Body size cap**: 5MB by default. Configurable via `--capture-max-body <bytes>` on `newsession`. Bodies exceeding the cap are truncated, and the JSONL entry includes `"truncated":true,"originalSize":<bytes>`.
+**Body size cap**: 5MB by default. Configurable via `--capture-max-body <bytes>` on `newsession` (also per-data-dir). Bodies exceeding the cap are truncated, and the JSONL entry includes `"truncated":true,"originalSize":<bytes>`.
 
 **Request bodies**: Saved for POST/PUT/PATCH requests when present and matching a captured content type.
 
 ### Sequence Number Padding
 
-Filenames use 6-digit zero-padded sequence numbers (e.g., `000001_resp.json`, `000042_req.json`). The `seq` field in the JSONL remains an unpadded integer.
+Filenames use 6-digit zero-padded sequence numbers (e.g., `000001_resp.json`, `000042_req.json`). The `seq` field in the JSONL remains an unpadded integer. Body file sequence numbers are sparse (they match the JSONL `seq` of their parent entry, not a separate counter), so the `bodies/` directory will have gaps (e.g., `000002_resp.json`, `000007_resp.json`, `000015_req.json`). Six digits supports 999,999 entries per session, which is sufficient for expected usage.
 
 ### Cleanup
 
@@ -187,20 +207,7 @@ The `net/<session-id>/` directory is deleted when the session ends (via `endsess
 
 ### SessionInfo
 
-Add `Capture bool` field:
-
-```go
-type SessionInfo struct {
-    TargetID       string `json:"target_id"`
-    ViewportWidth  int    `json:"viewport_width,omitempty"`
-    ViewportHeight int    `json:"viewport_height,omitempty"`
-    Capture        bool   `json:"capture,omitempty"`
-}
-```
-
-Note: `omitempty` on a bool means `false` is omitted. Since the default is capture-enabled, the field is only serialized when explicitly set to `false` via `--no-capture`. For backwards compatibility with existing sessions (which have no `capture` field), the monitor treats a missing/false `Capture` field as "capture enabled" -- the opt-out is explicit.
-
-**Correction**: Go's `omitempty` omits `false`, which is the opposite of what we want. Instead, use a `*bool` pointer or a separate approach:
+Add `NoCapture bool` field:
 
 ```go
 type SessionInfo struct {
@@ -211,7 +218,7 @@ type SessionInfo struct {
 }
 ```
 
-`NoCapture` defaults to `false` (zero value, omitted). Set to `true` by `--no-capture`. The monitor checks `!si.NoCapture` to determine if capture is enabled. This avoids the `omitempty` bool issue entirely.
+`NoCapture` defaults to `false` (zero value, omitted from JSON). Set to `true` by `--no-capture`. The monitor checks `!si.NoCapture` to determine if capture is enabled. This uses Go's `omitempty` correctly: the field is omitted when false (the common case, capture enabled), and only present when true (the opt-out case).
 
 ### State
 
@@ -261,6 +268,8 @@ Print the network event log for a session. Reads `index.jsonl` and outputs match
 
 Default output includes `seq`, `type`, and type-specific fields. `ts` and `headers` are omitted to reduce token usage.
 
+If a `--since` anchor event does not exist in the log (e.g., `--since nav` but no navigation has occurred), all events are shown (no filtering applied).
+
 `--path` performs prefix matching on the parsed URL path component (not substring on the full URL). `--path /api` matches `/api/users` but not `https://cdn.example.com/static/api-logo.png`.
 
 `--domain` matches on the URL's hostname. `*.example.com` matches any subdomain. Multiple domains can be comma-separated.
@@ -271,7 +280,7 @@ Print the body file for a given sequence number to stdout. Resolves the `bodyFil
 
 #### `rodney net-clear [--session <id>]`
 
-Truncate the session's JSONL and delete all body files. Resets the sequence counter. The monitor (if running) starts writing new events with `seq: 1`.
+Clear captured network data for a session. Sends a `clear` message to the monitor via the IPC socket (see IPC section). The monitor truncates the JSONL, deletes all body files, and resets the sequence counter. If the monitor is not running, `net-clear` performs the file operations directly.
 
 ### Help Text Additions
 
@@ -299,10 +308,13 @@ net-log flags:
 ### Startup
 
 1. `newsession` determines whether capture is enabled for the new session (default: yes, unless `--no-capture`).
-2. If capture is enabled and `state.MonitorPID` is 0 (or PID is dead):
-   - Launch `rodney _netmonitor <data-dir>` as a detached background process.
-   - Save PID to `state.MonitorPID`.
-3. If a monitor is already running (PID alive), no action needed. The monitor auto-attaches to new targets.
+2. Under the `state.lock` critical section (the same lock used for writing the session to `state.json`), check whether a monitor is needed:
+   - If capture is enabled and `state.MonitorPID` is 0 (or PID is dead):
+     - Launch `rodney _netmonitor <data-dir>` as a detached background process.
+     - Save PID to `state.MonitorPID` as part of the same locked state write.
+   - If a monitor is already running (PID alive), no action needed. The monitor auto-attaches to new targets.
+
+This ensures that two concurrent `newsession` commands against the same data dir cannot both launch a monitor (the state.lock serializes them).
 
 ### Runtime
 
@@ -310,10 +322,11 @@ The `_netmonitor` process:
 1. Reads `state.json` to get `DebugURL`.
 2. Connects to Chrome via CDP.
 3. Calls `Target.setAutoAttach{AutoAttach: true, WaitForDebuggerOnStart: false, Flatten: true}`.
-4. For each attached target, checks if the session has capture enabled (reads `state.json` for the session's `NoCapture` field by matching `TargetID`).
+4. On each `Target.attachedToTarget` event, reads `state.json` to find which session ID maps to the new target's ID and checks `NoCapture`. There is a race condition: `newsession` creates the page (which triggers the attach event) before writing the session to `state.json`. The monitor handles this by retrying the state.json lookup up to 3 times over 1.5 seconds if the target ID is not found, then skipping capture for unknown targets.
 5. If capture enabled: enables `Network`, `Page` domains; injects isolated world listeners.
 6. Listens on `<data-dir>/net/monitor.sock` for interaction markers from CLI commands.
 7. Writes events to per-session `index.jsonl` and body files.
+8. If the CDP WebSocket connection breaks (Chrome crash/restart), the monitor exits cleanly. The next `withPage` call detects the dead PID and re-launches the monitor after the browser is restarted.
 
 ### Crash Recovery
 
@@ -323,11 +336,18 @@ Any command that calls `withPage` (all interaction commands) checks:
 3. If dead, does any session in this data dir have capture enabled?
 4. If yes, re-launch the monitor and update `MonitorPID` in state.json.
 
-### Shutdown
+### Session End (not last session)
+
+When `endsession` closes a session but other sessions remain:
+1. The monitor detects the tab closure via `Target.detachedFromTarget` CDP event.
+2. The monitor stops capturing for that target, flushes pending writes, and closes its file handles for that session's JSONL.
+3. `endsession` then safely deletes `net/<session-id>/` (no open handles).
+
+### Shutdown (last session)
 
 `endsession`, when closing the last session:
 1. Sends SIGTERM to `MonitorPID` (alongside `ProxyPID`).
-2. The monitor handles SIGTERM: flushes pending writes, closes JSONL file handles, removes `monitor.sock`, exits.
+2. The monitor handles SIGTERM: flushes pending writes, closes all JSONL file handles, removes `monitor.sock`, exits.
 3. `endsession` deletes `net/<session-id>/` for the ended session.
 4. If the data dir is a temp dir, `os.RemoveAll` cleans up everything including `net/`.
 
@@ -348,8 +368,14 @@ This feature depends on the session-centric state management redesign, which is 
 
 All changes are additive; no existing behavior is modified.
 
+## Known Limitations
+
+- **Disk usage**: A long-lived session with heavy traffic can accumulate significant data (JSONL + body files), especially with the 5MB-per-body default. There is no automatic rotation or total size cap. Use `net-clear` to manually reset if the data grows too large. A future `--capture-max-size` option could cap total per-session storage.
+- **Attribution heuristic**: See the limitations documented in the Rodney Command Interaction Markers section.
+- **Capture settings are per-data-dir**: `--capture-types` and `--capture-max-body` apply to all sessions in a data directory. Use separate data dirs for different capture configurations.
+
 ## Future Work
 
-- **Query helper commands**: `net-since-nav`, `net-since-interaction`, and other purpose-built query commands. Most use cases are covered by `net-log` flags for now.
+- **Total size cap**: `--capture-max-size <bytes>` to cap per-session storage. When exceeded, oldest bodies are pruned and their JSONL entries updated with `"bodyPruned":true`.
 - **HAR export**: `rodney net-export --format har` to produce standard HAR files for use with browser dev tools.
-- **Selective WebSocket monitoring**: Currently all WebSocket frames are captured. A future `--ws-filter` could limit to specific WebSocket URLs.
+- **Selective WebSocket monitoring**: A `--ws-filter` to limit WebSocket frame capture to specific URLs.
