@@ -1417,6 +1417,8 @@ func cmdSessions(args []string) {
 			}
 		}
 
+		var entries []sessionEntry
+
 		if !pidAlive {
 			// PID dead -- check if state.json still exists to distinguish cases
 			if _, statErr := os.Stat(sp); statErr != nil {
@@ -1439,7 +1441,6 @@ func cmdSessions(args []string) {
 			continue
 		}
 
-		var entries []sessionEntry
 		browser, err := connectBrowser(&s)
 		if err != nil {
 			// Can't connect but PID alive -- show stale
@@ -1536,17 +1537,7 @@ case "status":
 	fatal("unknown command: status (did you mean sessions?)")
 ```
 
-- [ ] **Step 2: Remove deprecated fields from State struct**
-
-Now that the old commands are replaced, remove the deprecated fields added in Task 1:
-- `ActivePage`
-- `ViewportWidth` (top-level)
-- `ViewportHeight` (top-level)
-- `SessionIDs`
-
-Fix any remaining compilation errors from these removals (should be few or none since old commands are gone).
-
-- [ ] **Step 3: Delete old command functions**
+- [ ] **Step 2: Delete old command functions**
 
 Remove these functions entirely from main.go:
 - `cmdStart` (lines 776-962)
@@ -1557,6 +1548,16 @@ Remove these functions entirely from main.go:
 - `cmdPage` (lines 2019-2050)
 - `cmdNewPage` (lines 2052-2116)
 - `cmdClosePage` (lines 2118-2200)
+
+- [ ] **Step 3: Remove deprecated fields from State struct**
+
+Now that the old commands are deleted, remove the deprecated fields added in Task 1:
+- `ActivePage`
+- `ViewportWidth` (top-level)
+- `ViewportHeight` (top-level)
+- `SessionIDs`
+
+Fix any remaining compilation errors from these removals (should be few or none since old commands are gone).
 
 - [ ] **Step 4: Remove the homeDirFlag global and cleanupSessionDir**
 
