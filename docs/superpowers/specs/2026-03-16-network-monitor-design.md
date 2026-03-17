@@ -255,7 +255,7 @@ Print the network event log for a session. Reads `index.jsonl` and outputs match
 | `--since nav` | Show events since the last `page-navigated` event |
 | `--since render` | Since the last `page-loaded` event |
 | `--since interaction` | Since the last `interaction` or `user-*` event |
-| `--since <timestamp>` | Since a specific ISO 8601 timestamp |
+| `--since <timestamp>` | Since a specific ISO 8601 timestamp (or partial prefix thereof) |
 | `--id <request-id>` | Filter to a specific request/response stream |
 | `--method <method>` | Filter by HTTP method (comma-separated) |
 | `--path <prefix>` | Filter to requests whose URL path starts with this string |
@@ -335,6 +335,7 @@ Any command that calls `withPage` (all interaction commands) checks:
 2. Is that PID alive (signal 0)?
 3. If dead, does any session in this data dir have capture enabled?
 4. If yes, re-launch the monitor and update `MonitorPID` in state.json.
+(this should be done within a read-write-launch-check file lock, to avoid duplicate relaunches)
 
 ### Session End (not last session)
 
