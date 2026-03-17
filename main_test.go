@@ -4997,3 +4997,35 @@ func TestStealthCtx_Live_HTTPBin(t *testing.T) {
 		t.Logf("httpbin.org/get response contains expected JSON fields")
 	}
 }
+
+func TestFormatSessionsGroup(t *testing.T) {
+	entries := []sessionEntry{
+		{ID: "abc123", Title: "Dashboard", URL: "https://app.example.com"},
+		{ID: "def456", Title: "Login", URL: "https://app.example.com/login"},
+	}
+	got := formatSessionsGroup(".rodney/", entries, "abc123")
+	if !strings.Contains(got, "[abc123]") {
+		t.Fatal("should contain session ID in brackets")
+	}
+	if !strings.Contains(got, ".rodney/") {
+		t.Fatal("should contain group header")
+	}
+	if !strings.Contains(got, "*") {
+		t.Fatal("should mark active session")
+	}
+	// Verify non-active session does not get the marker
+	lines := strings.Split(got, "\n")
+	for _, line := range lines {
+		if strings.Contains(line, "[def456]") && strings.HasPrefix(line, "*") {
+			t.Fatal("non-active session should not be marked with *")
+		}
+	}
+	// Verify blank title handling
+	blankEntries := []sessionEntry{
+		{ID: "xyz789", Title: "", URL: "about:blank"},
+	}
+	got2 := formatSessionsGroup("~/.rodney/", blankEntries, "")
+	if !strings.Contains(got2, "Blank") {
+		t.Fatal("empty title should display as 'Blank'")
+	}
+}

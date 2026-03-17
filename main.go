@@ -579,6 +579,8 @@ func main() {
 		cmdAXNode(args)
 	case "endsession":
 		cmdEndSession(args)
+	case "sessions":
+		cmdSessions(args)
 	case "help", "-h", "--help":
 		printUsage()
 		os.Exit(0)
@@ -1493,6 +1495,197 @@ func cmdEndSession(args []string) {
 		// Remove temp dir if applicable
 		if strings.HasPrefix(dataDir, filepath.Join(os.TempDir(), "rodney-")) {
 			os.RemoveAll(dataDir)
+		}
+	}
+}
+
+type sessionEntry struct {
+	ID    string
+	Title string
+	URL   string
+}
+
+func formatSessionsGroup(header string, entries []sessionEntry, activeSID string) string {
+	var b strings.Builder
+	b.WriteString(header + "\n")
+	for _, e := range entries {
+		marker := " "
+		if e.ID == activeSID {
+			marker = "*"
+		}
+		title := e.Title
+		if title == "" {
+			title = "Blank"
+		}
+		b.WriteString(fmt.Sprintf("%s [%s] %s - %s\n", marker, e.ID, title, e.URL))
+	}
+	return b.String()
+}
+
+func cmdSessions(args []string) {
+	showAll := false
+	for _, a := range args {
+		if a == "--all" {
+			showAll = true
+		}
+	}
+
+	regPath := registryPath()
+	registry, err := registryLoadAll(regPath)
+	if err != nil {
+		fatal("cannot read registry: %v", err)
+	}
+	if len(registry) == 0 {
+		fmt.Fprintln(os.Stderr, "no sessions")
+		return
+	}
+
+	// Resolve active session for marker
+	activeSID := resolveSessionID(activeSessionID, "")
+
+	// If session context is set and --all not passed, filter to that session's data dir
+	filterDir := ""
+	if !showAll && activeSID != "" {
+		if dd, ok := registry[activeSID]; ok {
+			filterDir = dd
+		}
+	}
+
+	// Group sessions by data dir
+	groups := make(map[string][]string) // dataDir -> []sessionID
+	var groupOrder []string
+	for sid, dd := range registry {
+		if filterDir != "" && dd != filterDir {
+			continue
+		}
+		if _, seen := groups[dd]; !seen {
+			groupOrder = append(groupOrder, dd)
+		}
+		groups[dd] = append(groups[dd], sid)
+	}
+
+	lockPath := registryLockPath()
+	home, _ := os.UserHomeDir()
+	wd, _ := os.Getwd()
+
+	for _, dataDir := range groupOrder {
+		sids := groups[dataDir]
+
+		// Format header
+		header := dataDir
+		localDir := filepath.Join(wd, ".rodney")
+		globalDir := filepath.Join(home, ".rodney")
+		switch dataDir {
+		case localDir:
+			header = ".rodney/"
+		case globalDir:
+			header = "~/.rodney/"
+		default:
+			if strings.HasPrefix(dataDir, home+"/") {
+				header = "~/" + dataDir[len(home)+1:] + "/"
+			}
+		}
+
+		// Read state.json for this data dir
+		sp := filepath.Join(dataDir, "state.json")
+		data, readErr := os.ReadFile(sp)
+		if readErr != nil {
+			// state.json missing: prune all sessions for this dir from registry
+			for _, sid := range sids {
+				registryRemove(regPath, lockPath, sid)
+			}
+			continue
+		}
+
+		var s State
+		if err := json.Unmarshal(data, &s); err != nil {
+			// Corrupt state: prune
+			for _, sid := range sids {
+				registryRemove(regPath, lockPath, sid)
+			}
+			continue
+		}
+
+		// Check if Chrome PID is alive
+		pidAlive := false
+		if s.ChromePID > 0 {
+			if proc, findErr := os.FindProcess(s.ChromePID); findErr == nil {
+				if proc.Signal(syscall.Signal(0)) == nil {
+					pidAlive = true
+				}
+			}
+		}
+
+		if !pidAlive {
+			// PID dead: mark sessions as stale
+			var entries []sessionEntry
+			for _, sid := range sids {
+				si, ok := s.Sessions[sid]
+				if !ok {
+					registryRemove(regPath, lockPath, sid)
+					continue
+				}
+				_ = si
+				entries = append(entries, sessionEntry{
+					ID:    sid,
+					Title: "(stale)",
+					URL:   "",
+				})
+			}
+			if len(entries) > 0 {
+				fmt.Print(formatSessionsGroup(header, entries, activeSID))
+			}
+			continue
+		}
+
+		// PID alive: connect and get page info
+		browser, connErr := connectBrowser(&s)
+		if connErr != nil {
+			// Cannot connect but PID alive: treat as stale
+			var entries []sessionEntry
+			for _, sid := range sids {
+				entries = append(entries, sessionEntry{
+					ID:    sid,
+					Title: "(stale)",
+					URL:   "",
+				})
+			}
+			fmt.Print(formatSessionsGroup(header, entries, activeSID))
+			continue
+		}
+
+		pages, _ := browser.Pages()
+		pageMap := make(map[string]*rod.Page)
+		for _, p := range pages {
+			pageMap[string(p.TargetID)] = p
+		}
+
+		var entries []sessionEntry
+		for _, sid := range sids {
+			si, ok := s.Sessions[sid]
+			if !ok {
+				registryRemove(regPath, lockPath, sid)
+				continue
+			}
+			title := ""
+			pageURL := ""
+			if p, found := pageMap[si.TargetID]; found {
+				info, infoErr := p.Info()
+				if infoErr == nil {
+					title = info.Title
+					pageURL = info.URL
+				}
+			} else {
+				title = "(closed)"
+			}
+			entries = append(entries, sessionEntry{
+				ID:    sid,
+				Title: title,
+				URL:   pageURL,
+			})
+		}
+		if len(entries) > 0 {
+			fmt.Print(formatSessionsGroup(header, entries, activeSID))
 		}
 	}
 }
