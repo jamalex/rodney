@@ -577,6 +577,8 @@ func main() {
 		cmdAXFind(args)
 	case "ax-node":
 		cmdAXNode(args)
+	case "endsession":
+		cmdEndSession(args)
 	case "help", "-h", "--help":
 		printUsage()
 		os.Exit(0)
@@ -1379,6 +1381,120 @@ func cmdNewSession(args []string) {
 	}
 
 	fmt.Println(sessionID)
+}
+
+func cmdEndSession(args []string) {
+	// 1. Resolve session ID (positional > --session > env var)
+	positionalID := ""
+	if len(args) > 0 {
+		positionalID = args[0]
+	}
+	sid := resolveSessionID(activeSessionID, positionalID)
+	if sid == "" {
+		fatal("session ID required; pass --session <id>")
+	}
+
+	// 2. Look up in registry
+	regPath := registryPath()
+	lockPath := registryLockPath()
+	dataDir, err := registryLookup(regPath, sid)
+	if err != nil {
+		fatal("session %q not found", sid)
+	}
+
+	// 3. Load state from that data dir
+	sp := filepath.Join(dataDir, "state.json")
+	data, err := os.ReadFile(sp)
+	if err != nil {
+		fatal("cannot read state for session %q: %v", sid, err)
+	}
+	var s State
+	if err := json.Unmarshal(data, &s); err != nil {
+		fatal("corrupt state for session %q: %v", sid, err)
+	}
+
+	si, ok := s.Sessions[sid]
+	if !ok {
+		// Session not in state but in registry; clean up registry
+		registryRemove(regPath, lockPath, sid)
+		fatal("session %q not found in state", sid)
+	}
+
+	// 4. Close the page via CDP (gracefully handle already-closed tabs)
+	browser, err := connectBrowser(&s)
+	if err == nil {
+		pages, _ := browser.Pages()
+		for _, p := range pages {
+			if string(p.TargetID) == si.TargetID {
+				proto.TargetCloseTarget{TargetID: p.TargetID}.Call(browser)
+				break
+			}
+		}
+		// Clean up stealthCtxMap entry
+		stealthCtxMap.Delete(si.TargetID)
+	}
+
+	// 5. Remove session from state (under lock) and check if last session
+	slp := filepath.Join(dataDir, "state.lock")
+	wasLastSession := false
+	withFileLock(slp, func() error {
+		data, err := os.ReadFile(sp)
+		if err != nil {
+			return err
+		}
+		var fresh State
+		json.Unmarshal(data, &fresh)
+		delete(fresh.Sessions, sid)
+		wasLastSession = len(fresh.Sessions) == 0
+		return atomicWriteJSON(sp, &fresh)
+	})
+
+	// 6. Remove from registry
+	registryRemove(regPath, lockPath, sid)
+
+	// 7. If no sessions remain, shut down browser
+	if wasLastSession && browser != nil {
+		pages, _ := browser.Pages()
+		hasUserPages := false
+		for _, p := range pages {
+			info, err := p.Info()
+			if err != nil {
+				continue
+			}
+			if !strings.HasPrefix(info.URL, "chrome://") && info.URL != "about:blank" {
+				hasUserPages = true
+				break
+			}
+		}
+		if !hasUserPages {
+			browser.MustClose()
+		}
+
+		// Wait for PID to exit
+		if s.ChromePID > 0 {
+			waitForProcessExit(s.ChromePID, 3*time.Second)
+			if proc, err := os.FindProcess(s.ChromePID); err == nil {
+				proc.Signal(syscall.SIGTERM)
+				waitForProcessExit(s.ChromePID, 2*time.Second)
+			}
+		}
+
+		// Kill proxy helper
+		if s.ProxyPID > 0 {
+			if proc, err := os.FindProcess(s.ProxyPID); err == nil {
+				proc.Signal(syscall.SIGTERM)
+			}
+		}
+
+		// Remove state files
+		os.Remove(sp)
+		os.Remove(slp)
+
+		// Remove temp dir if applicable
+		if strings.HasPrefix(dataDir, filepath.Join(os.TempDir(), "rodney-")) {
+			os.RemoveAll(dataDir)
+		}
+	}
 }
 
 func cmdConnect(args []string) {
