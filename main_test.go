@@ -978,6 +978,54 @@ func TestSaveState_AtomicWrite(t *testing.T) {
 	}
 }
 
+func TestSessionInfo_NoCapture_JSONRoundTrip(t *testing.T) {
+	// NoCapture false (default) should be omitted from JSON
+	info := SessionInfo{TargetID: "T1", NoCapture: false}
+	data, _ := json.Marshal(info)
+	if strings.Contains(string(data), "no_capture") {
+		t.Fatalf("NoCapture=false should be omitted, got %s", data)
+	}
+
+	// NoCapture true should be present
+	info2 := SessionInfo{TargetID: "T2", NoCapture: true}
+	data2, _ := json.Marshal(info2)
+	if !strings.Contains(string(data2), `"no_capture":true`) {
+		t.Fatalf("NoCapture=true should be present, got %s", data2)
+	}
+
+	// Round-trip
+	var got SessionInfo
+	json.Unmarshal(data2, &got)
+	if !got.NoCapture {
+		t.Fatal("NoCapture not preserved in round-trip")
+	}
+}
+
+func TestState_MonitorPID_JSONRoundTrip(t *testing.T) {
+	s := State{
+		DebugURL:   "ws://test",
+		ChromePID:  123,
+		MonitorPID: 456,
+		Sessions:   map[string]SessionInfo{},
+	}
+	data, _ := json.Marshal(s)
+	if !strings.Contains(string(data), `"monitor_pid":456`) {
+		t.Fatalf("MonitorPID not serialized: %s", data)
+	}
+	var got State
+	json.Unmarshal(data, &got)
+	if got.MonitorPID != 456 {
+		t.Fatalf("MonitorPID not preserved: %d", got.MonitorPID)
+	}
+
+	// MonitorPID 0 should be omitted
+	s2 := State{DebugURL: "ws://test", ChromePID: 123}
+	data2, _ := json.Marshal(s2)
+	if strings.Contains(string(data2), "monitor_pid") {
+		t.Fatalf("MonitorPID=0 should be omitted: %s", data2)
+	}
+}
+
 func TestRegistry_AddAndLookup(t *testing.T) {
 	dir := t.TempDir()
 	reg := filepath.Join(dir, "sessions.json")

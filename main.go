@@ -155,6 +155,7 @@ type SessionInfo struct {
 	TargetID       string `json:"target_id"`
 	ViewportWidth  int    `json:"viewport_width,omitempty"`
 	ViewportHeight int    `json:"viewport_height,omitempty"`
+	NoCapture      bool   `json:"no_capture,omitempty"`
 }
 
 // State persisted between CLI invocations
@@ -170,6 +171,7 @@ type State struct {
 	ProxyPort       int                    `json:"proxy_port,omitempty"`
 	ProxyServer     string                 `json:"proxy_server,omitempty"`
 	ProxyConfigHash string                 `json:"proxy_config_hash,omitempty"`
+	MonitorPID      int                    `json:"monitor_pid,omitempty"`
 	Sessions        map[string]SessionInfo `json:"sessions,omitempty"`
 }
 
