@@ -45,13 +45,22 @@ func newStealthCtx(page *rod.Page, vpWidth, vpHeight int) *stealthCtx {
 }
 
 // getStealthCtx returns the cached stealthCtx for a page, creating one if needed.
-// The State's viewport dimensions are used for new contexts.
+// Viewport dimensions are resolved from the active session in s.Sessions, falling
+// back to the deprecated top-level State viewport fields.
 func getStealthCtx(page *rod.Page, s *State) *stealthCtx {
 	key := page.TargetID
 	if v, ok := stealthCtxMap.Load(key); ok {
 		return v.(*stealthCtx)
 	}
-	sc := newStealthCtx(page, s.ViewportWidth, s.ViewportHeight)
+	vpW, vpH := s.ViewportWidth, s.ViewportHeight
+	if activeSessionID != "" {
+		if si, ok := s.Sessions[activeSessionID]; ok {
+			if si.ViewportWidth > 0 && si.ViewportHeight > 0 {
+				vpW, vpH = si.ViewportWidth, si.ViewportHeight
+			}
+		}
+	}
+	sc := newStealthCtx(page, vpW, vpH)
 	actual, _ := stealthCtxMap.LoadOrStore(key, sc)
 	return actual.(*stealthCtx)
 }
@@ -353,6 +362,12 @@ func (sc *stealthCtx) visible(nodeID proto.DOMNodeID) (bool, error) {
 		if (style.opacity === '0') return false;
 		var rect = this.getBoundingClientRect();
 		if (rect.width <= 0 || rect.height <= 0) return false;
+		// Offscreen: rect must intersect viewport
+		var vpW = window.innerWidth || document.documentElement.clientWidth;
+		var vpH = window.innerHeight || document.documentElement.clientHeight;
+		if (rect.right <= 0 || rect.bottom <= 0 || rect.left >= vpW || rect.top >= vpH) return false;
+		// clip/clip-path
+		if (style.clip === 'rect(0px, 0px, 0px, 0px)' || style.clipPath === 'inset(100%)') return false;
 		return true;
 	}`)
 	if err != nil {
@@ -392,7 +407,30 @@ func (sc *stealthCtx) typeChar(ch rune) error {
 }
 
 // input focuses the element and types text with human-like timing.
+// For special input types (date, range, color, etc.) that can't be typed into,
+// sets the value via JS and dispatches input+change events.
 func (sc *stealthCtx) input(nodeID proto.DOMNodeID, text string) error {
+	// Check if this is a special input type that can't be typed into
+	typeResult, err := sc.callOn(nodeID, `function() {
+		var t = (this.type || '').toLowerCase();
+		if (t === 'date' || t === 'range' || t === 'color' || t === 'month' || t === 'week' || t === 'time') return t;
+		return '';
+	}`)
+	if err == nil {
+		inputType := typeResult.Result.Value.Str()
+		if inputType != "" {
+			// Set value via JS and dispatch input+change events
+			_, err := sc.callOn(nodeID, fmt.Sprintf(`function() {
+				var nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+					window.HTMLInputElement.prototype, 'value').set;
+				nativeInputValueSetter.call(this, %q);
+				this.dispatchEvent(new Event('input', {bubbles: true}));
+				this.dispatchEvent(new Event('change', {bubbles: true}));
+			}`, text))
+			return err
+		}
+	}
+	// Normal typing path
 	if err := sc.focus(nodeID); err != nil {
 		return err
 	}
@@ -417,7 +455,17 @@ func (sc *stealthCtx) clearInput(nodeID proto.DOMNodeID) error {
 	}
 
 	// Select all text in the input using the isolated world
-	_, err := sc.callOn(nodeID, "function() { this.select(); }")
+	_, err := sc.callOn(nodeID, `function() {
+		if (this.select) {
+			try { this.select(); return; } catch(e) {}
+		}
+		// Fallback for contenteditable: select all content via Selection API
+		var range = document.createRange();
+		range.selectNodeContents(this);
+		var sel = window.getSelection();
+		sel.removeAllRanges();
+		sel.addRange(range);
+	}`)
 	if err != nil {
 		return fmt.Errorf("select failed: %w", err)
 	}
@@ -557,6 +605,22 @@ func (sc *stealthCtx) moveMouse(x, y float64) error {
 // scrollIntoView scrolls the page so that the given node is visible in the viewport.
 // Uses wheel events for a natural scroll appearance.
 func (sc *stealthCtx) scrollIntoView(nodeID proto.DOMNodeID) error {
+	// Scroll any overflow ancestors first
+	sc.callOn(nodeID, `function() {
+		var el = this;
+		while (el.parentElement) {
+			el = el.parentElement;
+			var style = window.getComputedStyle(el);
+			var overflowY = style.overflowY;
+			var overflowX = style.overflowX;
+			if (overflowY === 'auto' || overflowY === 'scroll' ||
+				overflowX === 'auto' || overflowX === 'scroll') {
+				this.scrollIntoView({block: 'center', inline: 'center', behavior: 'instant'});
+				return;
+			}
+		}
+	}`)
+
 	box, err := proto.DOMGetBoxModel{NodeID: nodeID}.Call(sc.page)
 	if err != nil {
 		// Element may not have a box model (e.g., display:none); skip scroll
@@ -611,7 +675,15 @@ func (sc *stealthCtx) click(nodeID proto.DOMNodeID) error {
 	}
 	x, y, err := sc.getBoxModelCenter(nodeID)
 	if err != nil {
-		return err
+		return fmt.Errorf("element not clickable (may be hidden or have no layout)")
+	}
+	// Verify the target element is topmost at click coordinates
+	hitResult, err := sc.callOn(nodeID, fmt.Sprintf(`function() {
+		var el = document.elementFromPoint(%f, %f);
+		return this === el || this.contains(el);
+	}`, x, y))
+	if err == nil && !hitResult.Result.Value.Bool() {
+		return fmt.Errorf("element obscured at (%d,%d) by another element", int(x), int(y))
 	}
 	if err := sc.moveMouse(x, y); err != nil {
 		return err
@@ -639,6 +711,25 @@ func (sc *stealthCtx) click(nodeID proto.DOMNodeID) error {
 	}.Call(sc.page)
 	if err != nil {
 		return fmt.Errorf("mouse release failed: %w", err)
+	}
+	return nil
+}
+
+// dblclick scrolls to the element, moves the mouse to it, and double-clicks.
+// Uses CDP mouse events for natural cursor movement and click, then dispatches
+// a dblclick DOM event via the isolated world (Chrome's --single-process headless
+// mode does not reliably synthesize dblclick from CDP Input.dispatchMouseEvent).
+func (sc *stealthCtx) dblclick(nodeID proto.DOMNodeID) error {
+	// Perform a normal first click via CDP (scroll, move, press/release)
+	if err := sc.click(nodeID); err != nil {
+		return err
+	}
+	// Dispatch dblclick event on the element
+	_, err := sc.callOn(nodeID, `function() {
+		this.dispatchEvent(new MouseEvent('dblclick', {bubbles: true, cancelable: true}));
+	}`)
+	if err != nil {
+		return fmt.Errorf("dblclick event dispatch failed: %w", err)
 	}
 	return nil
 }

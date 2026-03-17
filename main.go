@@ -755,17 +755,18 @@ func userAgentDataScript(majorVer, fullVer, platform, arch string) string {
 
 // applyStealthToPage injects stealth scripts, sets viewport, and configures
 // user agent metadata for a page. Called for both initial and new pages.
-func applyStealthToPage(page *rod.Page, browser *rod.Browser, s *State) {
+// vpWidth/vpHeight of 0 means no viewport override (used in visible/non-headless mode).
+func applyStealthToPage(page *rod.Page, browser *rod.Browser, stealthEnabled bool, vpWidth, vpHeight int) {
 	// 1. Inject stealth scripts via CDP before any navigation occurs.
 	// addScriptToEvaluateOnNewDocument persists across navigations.
 	proto.PageAddScriptToEvaluateOnNewDocument{Source: stealth.JS}.Call(page)
 	proto.PageAddScriptToEvaluateOnNewDocument{Source: workerFixJS}.Call(page)
 
 	// 2. Set viewport
-	if s.ViewportWidth > 0 && s.ViewportHeight > 0 {
+	if vpWidth > 0 && vpHeight > 0 {
 		proto.EmulationSetDeviceMetricsOverride{
-			Width:             s.ViewportWidth,
-			Height:            s.ViewportHeight,
+			Width:             vpWidth,
+			Height:            vpHeight,
 			DeviceScaleFactor: 1,
 		}.Call(page)
 	}
@@ -1020,66 +1021,65 @@ func resolveProfile(dataDir, value string) (string, string) {
 	return value, "" // No match found; use value as-is with default data dir
 }
 
-func cmdStart(args []string) {
-	flags, err := parseStartFlags(args)
-	if err != nil {
-		fatal("%s", err)
-	}
-	ignoreCertErrors := flags.ignoreCertErrors
-
-	// Check if already running
-	if s, err := loadState(); err == nil {
-		// Try connecting
-		if b, err := connectBrowser(s); err == nil {
-			b.MustClose()
-			// It was actually running, warn
-			removeState()
+// getProxyEnvVar returns the raw proxy environment variable value (for hashing).
+func getProxyEnvVar() string {
+	for _, key := range []string{"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"} {
+		if v := os.Getenv(key); v != "" {
+			return v
 		}
 	}
+	return ""
+}
 
+// launchResult holds the results of launching a Chrome browser.
+type launchResult struct {
+	debugURL      string
+	pid           int
+	chromeDataDir string
+	proxyPID      int
+	proxyPort     int
+	proxyServer   string
+	proxyHash     string
+	vpWidth       int
+	vpHeight      int
+}
+
+// launchChrome starts a new Chrome process with the given flags and data directory.
+// It configures the launcher, handles proxy detection, stealth flags, viewport
+// parsing, and returns all info needed to populate the State.
+func launchChrome(flags *startFlags, dataDir string) launchResult {
+	ignoreCertErrors := flags.ignoreCertErrors
 	headless := flags.headless
 
-	dataDir := filepath.Join(stateDir(), "chrome-data")
-	os.MkdirAll(dataDir, 0755)
+	chromeDataDir := filepath.Join(dataDir, "chrome-data")
+	os.MkdirAll(chromeDataDir, 0755)
 	var profileDir string
 
 	if flags.profile != "" {
-		profileDir, _ = resolveProfile(dataDir, flags.profile)
+		profileDir, _ = resolveProfile(chromeDataDir, flags.profile)
 	}
 
 	l := launcher.New().
-		Leakless(false).        // Keep Chrome alive after CLI exits
-		UserDataDir(dataDir).
+		Leakless(false).
+		UserDataDir(chromeDataDir).
 		Headless(headless)
 
 	if profileDir != "" {
 		l = l.Set("profile-directory", profileDir)
 	}
 
-	// --no-sandbox is only needed when running as root (e.g., Docker
-	// containers). On normal desktops Chrome's sandbox provides important
-	// process isolation for security.
 	if os.Getuid() == 0 {
 		l = l.Set("no-sandbox")
 	}
 
-	// --disable-gpu avoids GPU-related crashes in headless/container
-	// environments. In visible mode we leave GPU enabled since software
-	// rendering can mishandle HiDPI scaling and cause viewport glitches.
 	if headless {
 		l = l.Set("disable-gpu")
 	}
 
-	// --single-process is required for screenshots in gVisor/container
-	// environments, but crashes mainline Chrome in non-headless mode.
-	// Only set it when we're NOT in stealth visible mode (which uses
-	// mainline Chrome).
 	if !flags.stealth || headless {
 		l = l.Set("single-process")
 	}
 
-	// When in non-headless mode, make sure that we show the startup window immediately
-	// (instead of showing a window only after calling "rodney open")
 	if !headless {
 		l = l.Delete("no-startup-window")
 	}
@@ -1088,9 +1088,6 @@ func cmdStart(args []string) {
 		l = l.Bin(bin)
 	}
 
-	// In stealth mode, prefer a system-installed Chrome over rod's bundled
-	// Chromium. Mainline Chrome has navigator.userAgentData and other
-	// features that make it harder to fingerprint as automation.
 	if flags.stealth && os.Getenv("ROD_CHROME_BIN") == "" {
 		for _, name := range []string{"google-chrome", "google-chrome-stable", "chromium-browser", "chromium"} {
 			if path, err := exec.LookPath(name); err == nil {
@@ -1102,10 +1099,13 @@ func cmdStart(args []string) {
 
 	// Detect authenticated proxy and launch helper if needed
 	var proxyPID, proxyPort int
+	var proxyServer, proxyHash string
 	if server, user, pass, needed := detectProxy(); needed {
+		proxyServer = server
+		proxyHash = proxyConfigHash(getProxyEnvVar())
+
 		authHeader := "Basic " + base64.StdEncoding.EncodeToString([]byte(user+":"+pass))
 
-		// Find a free port for the local proxy
 		ln, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
 			fatal("failed to find free port for proxy: %v", err)
@@ -1113,7 +1113,6 @@ func cmdStart(args []string) {
 		proxyPort = ln.Addr().(*net.TCPAddr).Port
 		ln.Close()
 
-		// Launch ourselves as the proxy helper in the background
 		exe, _ := os.Executable()
 		cmd := exec.Command(exe, "_proxy",
 			strconv.Itoa(proxyPort), server, authHeader)
@@ -1122,14 +1121,12 @@ func cmdStart(args []string) {
 			fatal("failed to start proxy helper: %v", err)
 		}
 		proxyPID = cmd.Process.Pid
-		// Detach so it survives after we exit
 		cmd.Process.Release()
 
-		// Wait for the proxy to be ready
 		time.Sleep(500 * time.Millisecond)
 
 		l.Set("proxy-server", fmt.Sprintf("http://127.0.0.1:%d", proxyPort))
-		ignoreCertErrors = true // Proxy requires ignoring cert errors
+		ignoreCertErrors = true
 		fmt.Printf("Auth proxy started (PID %d, port %d) -> %s\n", proxyPID, proxyPort, server)
 	}
 
@@ -1141,26 +1138,17 @@ func cmdStart(args []string) {
 		l.Set("disable-blink-features", "AutomationControlled")
 		l.Delete("enable-automation")
 
-		// Use --headless=new instead of rod's default --headless when in
-		// stealth mode. The new headless mode properly supports
-		// addScriptToEvaluateOnNewDocument and doesn't add "HeadlessChrome"
-		// to the user agent string.
 		if headless {
-			l.Headless(false)       // remove rod's default --headless flag
-			l.Set("headless", "new") // use new headless mode
+			l.Headless(false)
+			l.Set("headless", "new")
 		}
 	}
 
 	debugURL := l.MustLaunch()
-
-	// Get Chrome PID from the launcher
 	pid := l.PID()
 
 	var vpWidth, vpHeight int
 	if flags.stealth && headless {
-		// Only override viewport in headless mode. In visible mode the
-		// window controls the viewport — EmulationSetDeviceMetricsOverride
-		// would shrink the content area and fight with the window size.
 		vp := flags.viewport
 		if vp == "" {
 			vp = "1920x935"
@@ -1170,16 +1158,52 @@ func cmdStart(args []string) {
 		vpHeight, _ = strconv.Atoi(parts[1])
 	}
 
+	return launchResult{
+		debugURL:      debugURL,
+		pid:           pid,
+		chromeDataDir: chromeDataDir,
+		proxyPID:      proxyPID,
+		proxyPort:     proxyPort,
+		proxyServer:   proxyServer,
+		proxyHash:     proxyHash,
+		vpWidth:       vpWidth,
+		vpHeight:      vpHeight,
+	}
+}
+
+func cmdStart(args []string) {
+	flags, err := parseStartFlags(args)
+	if err != nil {
+		fatal("%s", err)
+	}
+
+	// Check if already running
+	if s, err := loadState(); err == nil {
+		// Try connecting
+		if b, err := connectBrowser(s); err == nil {
+			b.MustClose()
+			// It was actually running, warn
+			removeState()
+		}
+	}
+
+	result := launchChrome(&flags, stateDir())
+
 	state := &State{
-		DebugURL:       debugURL,
-		ChromePID:      pid,
-		ActivePage:     0,
-		DataDir:        dataDir,
-		ProxyPID:       proxyPID,
-		ProxyPort:      proxyPort,
-		Stealth:        flags.stealth,
-		ViewportWidth:  vpWidth,
-		ViewportHeight: vpHeight,
+		DebugURL:        result.debugURL,
+		ChromePID:       result.pid,
+		ActivePage:      0,
+		DataDir:         result.chromeDataDir,
+		Headless:        flags.headless,
+		Stealth:         flags.stealth,
+		Insecure:        flags.ignoreCertErrors,
+		Profile:         flags.profile,
+		ProxyPID:        result.proxyPID,
+		ProxyPort:       result.proxyPort,
+		ProxyServer:     result.proxyServer,
+		ProxyConfigHash: result.proxyHash,
+		ViewportWidth:   result.vpWidth,
+		ViewportHeight:  result.vpHeight,
 	}
 
 	if err := saveState(state); err != nil {
@@ -1192,20 +1216,169 @@ func cmdStart(args []string) {
 			pages, err := browser.Pages()
 			if err == nil {
 				for _, p := range pages {
-					applyStealthToPage(p, browser, state)
+					applyStealthToPage(p, browser, true, result.vpWidth, result.vpHeight)
 				}
 			}
 		}
 	}
 
-	fmt.Printf("Chrome started (PID %d)\n", pid)
-	fmt.Printf("Debug URL: %s\n", debugURL)
+	fmt.Printf("Chrome started (PID %d)\n", result.pid)
+	fmt.Printf("Debug URL: %s\n", result.debugURL)
 	if flags.stealth {
 		fmt.Println("Stealth mode enabled")
 	}
 	if homeDirFlag != "" {
 		fmt.Printf("Session: %s\n", homeDirFlag)
 	}
+}
+
+// cmdNewSession is the session-centric entry point: it lazily launches Chrome
+// (or reuses an existing browser), creates a new page/window, assigns a unique
+// session ID, persists everything to state.json and the global registry, and
+// prints ONLY the session ID to stdout.
+func cmdNewSession(args []string) {
+	flags, err := parseStartFlags(args)
+	if err != nil {
+		fatal("%s", err)
+	}
+
+	wd, _ := os.Getwd()
+	dataDir := resolveNewSessionDir(activeScopeMode, wd, homeDirFlag)
+	activeStateDir = dataDir
+
+	s, loadErr := loadState()
+	var browser *rod.Browser
+	browserAlreadyRunning := false
+
+	if loadErr == nil && s.ChromePID > 0 {
+		if proc, findErr := os.FindProcess(s.ChromePID); findErr == nil {
+			if proc.Signal(syscall.Signal(0)) == nil {
+				// PID alive: check compatibility
+				currentProxyHash := ""
+				if proxyEnv := getProxyEnvVar(); proxyEnv != "" {
+					currentProxyHash = proxyConfigHash(proxyEnv)
+				}
+				if compatErr := checkBrowserCompat(s, &flags, currentProxyHash); compatErr != nil {
+					fatal("%v", compatErr)
+				}
+				browser, err = connectBrowser(s)
+				if err != nil {
+					fatal("browser PID alive but cannot connect: %v", err)
+				}
+				browserAlreadyRunning = true
+			}
+		}
+	}
+
+	if !browserAlreadyRunning {
+		removeState()
+		result := launchChrome(&flags, dataDir)
+
+		s = &State{
+			DebugURL:        result.debugURL,
+			ChromePID:       result.pid,
+			DataDir:         result.chromeDataDir,
+			Headless:        flags.headless,
+			Stealth:         flags.stealth,
+			Insecure:        flags.ignoreCertErrors,
+			Profile:         flags.profile,
+			ProxyPID:        result.proxyPID,
+			ProxyPort:       result.proxyPort,
+			ProxyServer:     result.proxyServer,
+			ProxyConfigHash: result.proxyHash,
+			Sessions:        make(map[string]SessionInfo),
+		}
+
+		browser, err = connectBrowser(s)
+		if err != nil {
+			fatal("cannot connect to launched browser: %v", err)
+		}
+
+		if s.Stealth {
+			pages, _ := browser.Pages()
+			for _, p := range pages {
+				applyStealthToPage(p, browser, true, result.vpWidth, result.vpHeight)
+			}
+		}
+
+		if err := saveState(s); err != nil {
+			fatal("save state: %v", err)
+		}
+	}
+
+	// Create page: claim the blank tab for the first session, new window otherwise.
+	var page *rod.Page
+	if s.Sessions == nil {
+		s.Sessions = make(map[string]SessionInfo)
+	}
+	if len(s.Sessions) == 0 {
+		pages, _ := browser.Pages()
+		if len(pages) > 0 {
+			page = pages[0]
+		} else {
+			page = browser.MustPage("")
+		}
+	} else {
+		t, createErr := proto.TargetCreateTarget{URL: "", NewWindow: true}.Call(browser)
+		if createErr != nil {
+			fatal("create window: %v", createErr)
+		}
+		page = browser.MustPageFromTargetID(t.TargetID)
+		if s.Stealth {
+			applyStealthToPage(page, browser, true, 0, 0)
+		}
+	}
+
+	// Navigate to URL if provided
+	if flags.url != "" {
+		u := flags.url
+		if !strings.Contains(u, "://") {
+			u = "http://" + u
+		}
+		page.MustNavigate(u).MustWaitLoad()
+	}
+
+	// Generate unique session ID, avoiding collisions with the global registry
+	sessionID := shortID()
+	reg, _ := registryLoadAll(registryPath())
+	for {
+		if _, exists := reg[sessionID]; !exists {
+			break
+		}
+		sessionID = shortID()
+	}
+
+	// Parse viewport
+	vw, vh := 0, 0
+	if flags.viewport != "" {
+		parts := strings.SplitN(flags.viewport, "x", 2)
+		if len(parts) == 2 {
+			vw, _ = strconv.Atoi(parts[0])
+			vh, _ = strconv.Atoi(parts[1])
+		}
+	}
+
+	// Apply viewport via CDP if specified
+	if vw > 0 && vh > 0 {
+		proto.EmulationSetDeviceMetricsOverride{
+			Width: vw, Height: vh, DeviceScaleFactor: 1,
+		}.Call(page)
+	}
+
+	// Persist session info
+	s.Sessions[sessionID] = SessionInfo{
+		TargetID:       string(page.TargetID),
+		ViewportWidth:  vw,
+		ViewportHeight: vh,
+	}
+	if err := saveState(s); err != nil {
+		fatal("save state: %v", err)
+	}
+	if err := registryAdd(registryPath(), registryLockPath(), sessionID, dataDir); err != nil {
+		fatal("registry add: %v", err)
+	}
+
+	fmt.Println(sessionID)
 }
 
 func cmdConnect(args []string) {
@@ -1341,7 +1514,7 @@ func cmdOpen(args []string) {
 			// In stealth mode, create blank page first so stealth scripts
 			// are injected before any navigation occurs.
 			page = browser.MustPage("")
-			applyStealthToPage(page, browser, s)
+			applyStealthToPage(page, browser, true, s.ViewportWidth, s.ViewportHeight)
 			if err := page.Navigate(url); err != nil {
 				fatal("navigation failed: %v", err)
 			}
@@ -1361,7 +1534,7 @@ func cmdOpen(args []string) {
 		// previous CLI invocation has disconnected, so session-scoped
 		// state like Emulation.setUserAgentOverride is lost.
 		if s.Stealth {
-			applyStealthToPage(page, browser, s)
+			applyStealthToPage(page, browser, true, s.ViewportWidth, s.ViewportHeight)
 		}
 		if err := page.Navigate(url); err != nil {
 			fatal("navigation failed: %v", err)
@@ -2332,7 +2505,7 @@ func cmdNewPage(args []string) {
 	}
 
 	if s.Stealth {
-		applyStealthToPage(page, browser, s)
+		applyStealthToPage(page, browser, true, s.ViewportWidth, s.ViewportHeight)
 	}
 	if url != "" {
 		page.MustNavigate(url)
