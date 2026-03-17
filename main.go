@@ -2,8 +2,10 @@ package main
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	_ "embed"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -202,6 +204,132 @@ func saveState(s *State) error {
 
 func removeState() {
 	os.Remove(statePath())
+}
+
+// ---------------------------------------------------------------------------
+// Global session registry (~/.rodney/sessions.json)
+// ---------------------------------------------------------------------------
+
+// registryDir returns the global config directory (~/.rodney/).
+func registryDir() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".rodney")
+}
+
+// registryPath returns the path to the global session registry file.
+func registryPath() string {
+	return filepath.Join(registryDir(), "sessions.json")
+}
+
+// registryLockPath returns the path to the registry lock file.
+func registryLockPath() string {
+	return filepath.Join(registryDir(), "sessions.lock")
+}
+
+// withFileLock acquires an exclusive flock on lockPath, runs fn, then releases.
+func withFileLock(lockPath string, fn func() error) error {
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0755); err != nil {
+		return fmt.Errorf("create lock dir: %w", err)
+	}
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0644)
+	if err != nil {
+		return fmt.Errorf("open lock file: %w", err)
+	}
+	defer f.Close()
+
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		return fmt.Errorf("acquire lock: %w", err)
+	}
+	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+
+	return fn()
+}
+
+// atomicWriteJSON writes v as indented JSON to path via a temp file + rename.
+func atomicWriteJSON(path string, v interface{}) error {
+	data, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return err
+	}
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, ".tmp-*.json")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	return os.Rename(tmpName, path)
+}
+
+// registryLoadAll reads the entire registry map from regPath.
+// Returns an empty map (not error) if the file does not exist.
+func registryLoadAll(regPath string) (map[string]string, error) {
+	data, err := os.ReadFile(regPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return map[string]string{}, nil
+		}
+		return nil, err
+	}
+	var m map[string]string
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil, fmt.Errorf("corrupt registry: %w", err)
+	}
+	return m, nil
+}
+
+// registryLookup returns the data directory for sessionID, or an error if not found.
+func registryLookup(regPath, sessionID string) (string, error) {
+	m, err := registryLoadAll(regPath)
+	if err != nil {
+		return "", err
+	}
+	dir, ok := m[sessionID]
+	if !ok {
+		return "", fmt.Errorf("session %q not found in registry", sessionID)
+	}
+	return dir, nil
+}
+
+// registryAdd adds a sessionID -> dataDir mapping under an exclusive file lock.
+func registryAdd(regPath, lockPath, sessionID, dataDir string) error {
+	return withFileLock(lockPath, func() error {
+		m, err := registryLoadAll(regPath)
+		if err != nil {
+			return err
+		}
+		m[sessionID] = dataDir
+		return atomicWriteJSON(regPath, m)
+	})
+}
+
+// registryRemove deletes a sessionID from the registry under an exclusive file lock.
+func registryRemove(regPath, lockPath, sessionID string) error {
+	return withFileLock(lockPath, func() error {
+		m, err := registryLoadAll(regPath)
+		if err != nil {
+			return err
+		}
+		delete(m, sessionID)
+		return atomicWriteJSON(regPath, m)
+	})
+}
+
+// proxyConfigHash returns a hex-encoded SHA-256 hash of the proxy URL.
+func proxyConfigHash(proxyURL string) string {
+	h := sha256.Sum256([]byte(proxyURL))
+	return hex.EncodeToString(h[:])
 }
 
 // connectBrowser connects to the running Chrome instance

@@ -925,6 +925,68 @@ func TestState_NewFields_JSONRoundTrip(t *testing.T) {
 	}
 }
 
+func TestRegistry_AddAndLookup(t *testing.T) {
+	dir := t.TempDir()
+	reg := filepath.Join(dir, "sessions.json")
+	lock := filepath.Join(dir, "sessions.lock")
+	if err := registryAdd(reg, lock, "abc123", "/tmp/rodney-xyz"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := registryLookup(reg, "abc123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "/tmp/rodney-xyz" {
+		t.Fatalf("got %q, want %q", got, "/tmp/rodney-xyz")
+	}
+}
+
+func TestRegistry_LookupMissing(t *testing.T) {
+	dir := t.TempDir()
+	reg := filepath.Join(dir, "sessions.json")
+	_, err := registryLookup(reg, "nothere")
+	if err == nil {
+		t.Fatal("expected error for missing session")
+	}
+}
+
+func TestRegistry_Remove(t *testing.T) {
+	dir := t.TempDir()
+	reg := filepath.Join(dir, "sessions.json")
+	lock := filepath.Join(dir, "sessions.lock")
+	registryAdd(reg, lock, "abc123", "/tmp/rodney-xyz")
+	registryAdd(reg, lock, "def456", "/tmp/rodney-xyz")
+	if err := registryRemove(reg, lock, "abc123"); err != nil {
+		t.Fatal(err)
+	}
+	_, err := registryLookup(reg, "abc123")
+	if err == nil {
+		t.Fatal("expected error after removal")
+	}
+	got, err := registryLookup(reg, "def456")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "/tmp/rodney-xyz" {
+		t.Fatalf("wrong dir: %q", got)
+	}
+}
+
+func TestRegistry_LoadAll(t *testing.T) {
+	dir := t.TempDir()
+	reg := filepath.Join(dir, "sessions.json")
+	lock := filepath.Join(dir, "sessions.lock")
+	registryAdd(reg, lock, "aaa111", "/path/a")
+	registryAdd(reg, lock, "bbb222", "/path/b")
+	all, err := registryLoadAll(reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(all))
+	}
+}
+
 func TestMimeToExt(t *testing.T) {
 	tests := []struct {
 		mime string
