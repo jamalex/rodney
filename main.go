@@ -809,6 +809,37 @@ func withPage() (*State, *rod.Browser, *rod.Page) {
 	if err != nil {
 		fatal("no browser running for session %q: %v", sid, err)
 	}
+
+	// Check network monitor health and re-launch if needed
+	if s.MonitorPID > 0 && !isProcessAlive(s.MonitorPID) {
+		hasCapture := false
+		for _, si := range s.Sessions {
+			if !si.NoCapture {
+				hasCapture = true
+				break
+			}
+		}
+		if hasCapture {
+			withFileLock(stateLockPath(), func() error {
+				fresh, err := loadState()
+				if err != nil {
+					return err
+				}
+				if fresh.MonitorPID > 0 && isProcessAlive(fresh.MonitorPID) {
+					return nil
+				}
+				pid := launchNetMonitor(dataDir)
+				fresh.MonitorPID = pid
+				// Write directly since we already hold the lock
+				return atomicWriteJSON(statePath(), fresh)
+			})
+			s, err = loadState()
+			if err != nil {
+				fatal("reload state: %v", err)
+			}
+		}
+	}
+
 	browser, err := connectBrowser(s)
 	if err != nil {
 		fatal("browser for session %q is no longer running: %v", sid, err)
