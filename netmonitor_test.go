@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestNetEvent_JSONSerialization(t *testing.T) {
@@ -275,5 +276,73 @@ func TestBodyFileExt(t *testing.T) {
 		if got != tt.ext {
 			t.Errorf("bodyFileExt(%q) = %q, want %q", tt.mime, got, tt.ext)
 		}
+	}
+}
+
+func TestIPC_SendAndReceive(t *testing.T) {
+	dir := t.TempDir()
+	sockPath := filepath.Join(dir, "monitor.sock")
+
+	received := make(chan IPCMessage, 10)
+	srv, err := newIPCServer(sockPath, func(msg IPCMessage) {
+		received <- msg
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.close()
+
+	err = ipcSend(sockPath, IPCMessage{
+		Session: "abc123",
+		Type:    "interaction",
+		Cmd:     "click",
+		Args:    []string{"#btn"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case msg := <-received:
+		if msg.Session != "abc123" || msg.Cmd != "click" {
+			t.Fatalf("unexpected message: %+v", msg)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for message")
+	}
+}
+
+func TestIPC_ClearMessage(t *testing.T) {
+	dir := t.TempDir()
+	sockPath := filepath.Join(dir, "monitor.sock")
+
+	received := make(chan IPCMessage, 10)
+	srv, err := newIPCServer(sockPath, func(msg IPCMessage) {
+		received <- msg
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.close()
+
+	err = ipcSend(sockPath, IPCMessage{Session: "abc123", Type: "clear"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case msg := <-received:
+		if msg.Type != "clear" || msg.Session != "abc123" {
+			t.Fatalf("unexpected: %+v", msg)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout")
+	}
+}
+
+func TestIPC_SendFailsGracefully(t *testing.T) {
+	err := ipcSend("/tmp/nonexistent-rodney-test.sock", IPCMessage{Type: "interaction"})
+	if err == nil {
+		t.Fatal("expected error for missing socket")
 	}
 }
