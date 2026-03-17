@@ -925,6 +925,31 @@ func TestState_NewFields_JSONRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSaveState_AtomicWrite(t *testing.T) {
+	dir := t.TempDir()
+	sp := filepath.Join(dir, "state.json")
+	lp := filepath.Join(dir, "state.lock")
+	s := &State{
+		DebugURL:  "ws://test",
+		ChromePID: 999,
+		Sessions:  map[string]SessionInfo{"abc": {TargetID: "T1"}},
+	}
+	if err := saveStateAt(sp, lp, s); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(sp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got State
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.ChromePID != 999 {
+		t.Fatalf("expected PID 999, got %d", got.ChromePID)
+	}
+}
+
 func TestRegistry_AddAndLookup(t *testing.T) {
 	dir := t.TempDir()
 	reg := filepath.Join(dir, "sessions.json")

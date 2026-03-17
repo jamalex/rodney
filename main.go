@@ -179,6 +179,10 @@ func statePath() string {
 	return filepath.Join(stateDir(), "state.json")
 }
 
+func stateLockPath() string {
+	return filepath.Join(stateDir(), "state.lock")
+}
+
 func loadState() (*State, error) {
 	data, err := os.ReadFile(statePath())
 	if err != nil {
@@ -191,15 +195,16 @@ func loadState() (*State, error) {
 	return &s, nil
 }
 
+// saveStateAt writes state to statePath using atomic temp+rename under an exclusive file lock.
+func saveStateAt(statePath, lockPath string, s *State) error {
+	return withFileLock(lockPath, func() error {
+		return atomicWriteJSON(statePath, s)
+	})
+}
+
+// saveState writes state to the default state path with locking and atomic writes.
 func saveState(s *State) error {
-	if err := os.MkdirAll(stateDir(), 0755); err != nil {
-		return err
-	}
-	data, err := json.MarshalIndent(s, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(statePath(), data, 0644)
+	return saveStateAt(statePath(), stateLockPath(), s)
 }
 
 func removeState() {
@@ -1245,7 +1250,9 @@ func cmdOpen(args []string) {
 			page = browser.MustPage(url)
 		}
 		s.ActivePage = 0
-		saveState(s)
+		if err := saveState(s); err != nil {
+			fatal("failed to save state: %v", err)
+		}
 	} else {
 		page, err = getActivePage(browser, s)
 		if err != nil {
@@ -2248,7 +2255,9 @@ func cmdNewPage(args []string) {
 			break
 		}
 	}
-	saveState(s)
+	if err := saveState(s); err != nil {
+		fatal("failed to save state: %v", err)
+	}
 
 	info, _ := page.Info()
 	if info != nil {
@@ -2339,7 +2348,9 @@ func cmdClosePage(args []string) {
 	if s.ActivePage < 0 {
 		s.ActivePage = 0
 	}
-	saveState(s)
+	if err := saveState(s); err != nil {
+		fatal("failed to save state: %v", err)
+	}
 	fmt.Printf("Closed page %s\n", closeID)
 }
 
