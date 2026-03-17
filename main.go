@@ -334,7 +334,7 @@ func registryRemove(regPath, lockPath, sessionID string) error {
 // proxyConfigHash returns a hex-encoded SHA-256 hash of the proxy URL.
 func proxyConfigHash(proxyURL string) string {
 	h := sha256.Sum256([]byte(proxyURL))
-	return hex.EncodeToString(h[:])
+	return "sha256:" + hex.EncodeToString(h[:])
 }
 
 // connectBrowser connects to the running Chrome instance

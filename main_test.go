@@ -1012,6 +1012,42 @@ func TestRegistry_LoadAll(t *testing.T) {
 	}
 }
 
+func TestRegistry_AtomicWrite_ConcurrentRead(t *testing.T) {
+	dir := t.TempDir()
+	reg := filepath.Join(dir, "sessions.json")
+	lock := filepath.Join(dir, "sessions.lock")
+	registryAdd(reg, lock, "abc123", "/tmp/rodney-xyz")
+	for i := 0; i < 100; i++ {
+		all, err := registryLoadAll(reg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(all) < 1 {
+			t.Fatal("read returned empty during concurrent access")
+		}
+	}
+}
+
+func TestProxyConfigHash(t *testing.T) {
+	h := proxyConfigHash("http://user:pass@proxy:3128")
+	if !strings.HasPrefix(h, "sha256:") {
+		t.Fatalf("expected sha256: prefix, got %q", h)
+	}
+	if len(h) != 7+64 { // "sha256:" + 64 hex chars
+		t.Fatalf("unexpected hash length: %d", len(h))
+	}
+	// Same input should produce same hash
+	h2 := proxyConfigHash("http://user:pass@proxy:3128")
+	if h != h2 {
+		t.Fatal("same input produced different hashes")
+	}
+	// Different input should produce different hash
+	h3 := proxyConfigHash("http://other:pass@proxy:3128")
+	if h == h3 {
+		t.Fatal("different inputs produced same hash")
+	}
+}
+
 func TestMimeToExt(t *testing.T) {
 	tests := []struct {
 		mime string
