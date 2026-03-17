@@ -130,21 +130,36 @@ func resolveStateDir(mode scopeMode, workingDir string) string {
 	}
 }
 
-// State persisted between CLI invocations
-type State struct {
-	DebugURL       string            `json:"debug_url"`
-	ChromePID      int               `json:"chrome_pid"`
-	ActivePage     int               `json:"active_page"`  // index into pages list
-	DataDir        string            `json:"data_dir"`
-	ProxyPID       int               `json:"proxy_pid,omitempty"`  // PID of auth proxy helper
-	ProxyPort      int               `json:"proxy_port,omitempty"` // local port of auth proxy
-	Stealth        bool              `json:"stealth,omitempty"`
-	ViewportWidth  int               `json:"viewport_width,omitempty"`
-	ViewportHeight int               `json:"viewport_height,omitempty"`
-	SessionIDs        map[string]string `json:"session_ids,omitempty"` // short ID -> Chrome TargetID
+// SessionInfo holds per-session state within a browser instance.
+type SessionInfo struct {
+	TargetID       string `json:"target_id"`
+	ViewportWidth  int    `json:"viewport_width,omitempty"`
+	ViewportHeight int    `json:"viewport_height,omitempty"`
 }
 
-// activeSessionID is set by --page <id> flag, extracted globally in main().
+// State persisted between CLI invocations
+type State struct {
+	DebugURL        string                 `json:"debug_url"`
+	ChromePID       int                    `json:"chrome_pid"`
+	DataDir         string                 `json:"data_dir"`
+	Headless        bool                   `json:"headless,omitempty"`
+	Stealth         bool                   `json:"stealth,omitempty"`
+	Insecure        bool                   `json:"insecure,omitempty"`
+	Profile         string                 `json:"profile,omitempty"`
+	ProxyPID        int                    `json:"proxy_pid,omitempty"`
+	ProxyPort       int                    `json:"proxy_port,omitempty"`
+	ProxyServer     string                 `json:"proxy_server,omitempty"`
+	ProxyConfigHash string                 `json:"proxy_config_hash,omitempty"`
+	Sessions        map[string]SessionInfo `json:"sessions,omitempty"`
+
+	// Deprecated: kept for compilation until old commands are removed later
+	ActivePage     int               `json:"active_page,omitempty"`
+	ViewportWidth  int               `json:"viewport_width,omitempty"`
+	ViewportHeight int               `json:"viewport_height,omitempty"`
+	SessionIDs     map[string]string `json:"session_ids,omitempty"`
+}
+
+// activeSessionID is set by --session <id> flag or RODNEY_SESSION env var.
 var activeSessionID string
 
 func stateDir() string {

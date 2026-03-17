@@ -651,7 +651,7 @@ func TestDownload_ImgSrc(t *testing.T) {
 // =====================
 
 func TestExtractScopeArgs_NoFlags(t *testing.T) {
-	mode, homeDir, remaining := extractScopeArgs([]string{"open", "https://example.com"})
+	mode, homeDir, _, remaining := extractScopeArgs([]string{"open", "https://example.com"})
 	if mode != scopeAuto {
 		t.Errorf("expected scopeAuto, got %v", mode)
 	}
@@ -664,7 +664,7 @@ func TestExtractScopeArgs_NoFlags(t *testing.T) {
 }
 
 func TestExtractScopeArgs_LocalFlag(t *testing.T) {
-	mode, _, remaining := extractScopeArgs([]string{"--local", "start"})
+	mode, _, _, remaining := extractScopeArgs([]string{"--local", "start"})
 	if mode != scopeLocal {
 		t.Errorf("expected scopeLocal, got %v", mode)
 	}
@@ -674,7 +674,7 @@ func TestExtractScopeArgs_LocalFlag(t *testing.T) {
 }
 
 func TestExtractScopeArgs_GlobalFlag(t *testing.T) {
-	mode, _, remaining := extractScopeArgs([]string{"--global", "open", "https://example.com"})
+	mode, _, _, remaining := extractScopeArgs([]string{"--global", "open", "https://example.com"})
 	if mode != scopeGlobal {
 		t.Errorf("expected scopeGlobal, got %v", mode)
 	}
@@ -684,7 +684,7 @@ func TestExtractScopeArgs_GlobalFlag(t *testing.T) {
 }
 
 func TestExtractScopeArgs_LocalFlagAfterCommand(t *testing.T) {
-	mode, _, remaining := extractScopeArgs([]string{"open", "--local", "https://example.com"})
+	mode, _, _, remaining := extractScopeArgs([]string{"open", "--local", "https://example.com"})
 	if mode != scopeLocal {
 		t.Errorf("expected scopeLocal, got %v", mode)
 	}
@@ -694,14 +694,14 @@ func TestExtractScopeArgs_LocalFlagAfterCommand(t *testing.T) {
 }
 
 func TestExtractScopeArgs_LastFlagWins(t *testing.T) {
-	mode, _, _ := extractScopeArgs([]string{"--local", "--global", "start"})
+	mode, _, _, _ := extractScopeArgs([]string{"--local", "--global", "start"})
 	if mode != scopeGlobal {
 		t.Errorf("expected last flag (scopeGlobal) to win, got %v", mode)
 	}
 }
 
 func TestExtractScopeArgs_HomeDirAtEnd(t *testing.T) {
-	mode, homeDir, remaining := extractScopeArgs([]string{"start", "--stealth", "--home-dir", "/tmp/my-session"})
+	mode, homeDir, _, remaining := extractScopeArgs([]string{"start", "--stealth", "--home-dir", "/tmp/my-session"})
 	if mode != scopeAuto {
 		t.Errorf("expected scopeAuto, got %v", mode)
 	}
@@ -714,7 +714,7 @@ func TestExtractScopeArgs_HomeDirAtEnd(t *testing.T) {
 }
 
 func TestExtractScopeArgs_HomeDirEquals(t *testing.T) {
-	_, homeDir, remaining := extractScopeArgs([]string{"open", "https://example.com", "--home-dir=/tmp/foo"})
+	_, homeDir, _, remaining := extractScopeArgs([]string{"open", "https://example.com", "--home-dir=/tmp/foo"})
 	if homeDir != "/tmp/foo" {
 		t.Errorf("expected homeDir=/tmp/foo, got %q", homeDir)
 	}
@@ -724,7 +724,7 @@ func TestExtractScopeArgs_HomeDirEquals(t *testing.T) {
 }
 
 func TestExtractScopeArgs_HomeDirOverridesScope(t *testing.T) {
-	mode, homeDir, _ := extractScopeArgs([]string{"--local", "start", "--home-dir", "/tmp/explicit"})
+	mode, homeDir, _, _ := extractScopeArgs([]string{"--local", "start", "--home-dir", "/tmp/explicit"})
 	// --home-dir takes precedence; mode still captured but ignored in main()
 	if homeDir != "/tmp/explicit" {
 		t.Errorf("expected homeDir=/tmp/explicit, got %q", homeDir)
@@ -736,7 +736,7 @@ func TestExtractScopeArgs_HomeDirOverridesScope(t *testing.T) {
 
 func TestExtractScopeArgs_HomeDirMissingValue(t *testing.T) {
 	// --home-dir at end with no value should be ignored (left in args)
-	_, homeDir, remaining := extractScopeArgs([]string{"start", "--home-dir"})
+	_, homeDir, _, remaining := extractScopeArgs([]string{"start", "--home-dir"})
 	if homeDir != "" {
 		t.Errorf("expected empty homeDir when value missing, got %q", homeDir)
 	}
@@ -871,6 +871,57 @@ func TestStateDir_EnvVar(t *testing.T) {
 	got := stateDir()
 	if got != dir {
 		t.Errorf("stateDir() = %q, want %q", got, dir)
+	}
+}
+
+func TestSessionInfo_JSONRoundTrip(t *testing.T) {
+	info := SessionInfo{
+		TargetID:       "ABCDEF123",
+		ViewportWidth:  1280,
+		ViewportHeight: 720,
+	}
+	data, err := json.Marshal(info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got SessionInfo
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got != info {
+		t.Fatalf("roundtrip mismatch: got %+v, want %+v", got, info)
+	}
+}
+
+func TestState_NewFields_JSONRoundTrip(t *testing.T) {
+	s := State{
+		DebugURL:        "ws://127.0.0.1:9222/devtools/browser/abc",
+		ChromePID:       12345,
+		DataDir:         "/tmp/rodney-abc/chrome-data",
+		Headless:        true,
+		Stealth:         true,
+		Insecure:        false,
+		Profile:         "Default",
+		ProxyServer:     "proxy.corp:3128",
+		ProxyConfigHash: "sha256:abc123",
+		Sessions: map[string]SessionInfo{
+			"abc123": {TargetID: "TID1", ViewportWidth: 1920, ViewportHeight: 935},
+		},
+	}
+	data, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got State
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Headless != true || got.Profile != "Default" || got.ProxyConfigHash != "sha256:abc123" {
+		t.Fatalf("new fields not preserved: %+v", got)
+	}
+	si, ok := got.Sessions["abc123"]
+	if !ok || si.TargetID != "TID1" || si.ViewportWidth != 1920 {
+		t.Fatalf("session info not preserved: %+v", got.Sessions)
 	}
 }
 
