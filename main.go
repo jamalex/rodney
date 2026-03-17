@@ -853,6 +853,24 @@ func withPage() (*State, *rod.Browser, *rod.Page) {
 	return s, browser, page
 }
 
+// sendInteractionMarker sends a pre-action marker to the network monitor.
+func sendInteractionMarker(cmd string, args []string) {
+	if activeSessionID == "" {
+		return
+	}
+	dataDir, err := registryLookup(registryPath(), activeSessionID)
+	if err != nil {
+		return
+	}
+	sockPath := filepath.Join(dataDir, "net", "monitor.sock")
+	ipcSend(sockPath, IPCMessage{
+		Session: activeSessionID,
+		Type:    "interaction",
+		Cmd:     cmd,
+		Args:    args,
+	})
+}
+
 // --- Commands ---
 
 type startFlags struct {
@@ -1684,6 +1702,7 @@ func cmdOpen(args []string) {
 	}
 
 	s, browser, page := withPage()
+	sendInteractionMarker("open", []string{url})
 
 	// Re-apply stealth on each navigation. The CDP session from the
 	// previous CLI invocation has disconnected, so session-scoped
@@ -1707,6 +1726,7 @@ func cmdOpen(args []string) {
 
 func cmdBack(args []string) {
 	_, _, page := withPage()
+	sendInteractionMarker("back", nil)
 	page.MustNavigateBack()
 	page.MustWaitLoad()
 	info, _ := page.Info()
@@ -1717,6 +1737,7 @@ func cmdBack(args []string) {
 
 func cmdForward(args []string) {
 	_, _, page := withPage()
+	sendInteractionMarker("forward", nil)
 	page.MustNavigateForward()
 	page.MustWaitLoad()
 	info, _ := page.Info()
@@ -1733,6 +1754,7 @@ func cmdReload(args []string) {
 		}
 	}
 	_, _, page := withPage()
+	sendInteractionMarker("reload", args)
 	if hard {
 		// CDP Page.reload with ignoreCache (equivalent to Shift+Refresh)
 		err := (proto.PageReload{IgnoreCache: true}).Call(page)
@@ -1904,6 +1926,7 @@ func cmdJS(args []string) {
 	}
 	expr := strings.Join(args, " ")
 	s, _, page := withPage()
+	sendInteractionMarker("js", args)
 
 	if s.Stealth {
 		sc := getStealthCtx(page, s)
@@ -1960,6 +1983,7 @@ func cmdClick(args []string) {
 		fatal("usage: rodney click <selector>")
 	}
 	s, _, page := withPage()
+	sendInteractionMarker("click", args)
 	if s.Stealth {
 		sc := getStealthCtx(page, s)
 		nodeID, err := sc.element(args[0], defaultTimeout)
@@ -1990,6 +2014,7 @@ func cmdInput(args []string) {
 		fatal("usage: rodney input <selector> <text>")
 	}
 	s, _, page := withPage()
+	sendInteractionMarker("input", args)
 	text := strings.Join(args[1:], " ")
 	if s.Stealth {
 		sc := getStealthCtx(page, s)
@@ -2016,6 +2041,7 @@ func cmdClear(args []string) {
 		fatal("usage: rodney clear <selector>")
 	}
 	s, _, page := withPage()
+	sendInteractionMarker("clear", args)
 	if s.Stealth {
 		sc := getStealthCtx(page, s)
 		nodeID, err := sc.element(args[0], defaultTimeout)
@@ -2044,6 +2070,7 @@ func cmdFile(args []string) {
 	filePath := args[1]
 
 	_, _, page := withPage()
+	sendInteractionMarker("file", args)
 	el, err := page.Element(selector)
 	if err != nil {
 		fatal("element not found: %v", err)
@@ -2271,6 +2298,7 @@ func cmdSelect(args []string) {
 		fatal("usage: rodney select <selector> <value>")
 	}
 	s, _, page := withPage()
+	sendInteractionMarker("select", args)
 	if s.Stealth {
 		sc := getStealthCtx(page, s)
 		nodeID, err := sc.element(args[0], defaultTimeout)
@@ -2303,6 +2331,7 @@ func cmdSubmit(args []string) {
 		fatal("usage: rodney submit <selector>")
 	}
 	s, _, page := withPage()
+	sendInteractionMarker("submit", args)
 	if s.Stealth {
 		sc := getStealthCtx(page, s)
 		nodeID, err := sc.element(args[0], defaultTimeout)
@@ -2328,6 +2357,7 @@ func cmdHover(args []string) {
 		fatal("usage: rodney hover <selector>")
 	}
 	s, _, page := withPage()
+	sendInteractionMarker("hover", args)
 	if s.Stealth {
 		sc := getStealthCtx(page, s)
 		nodeID, err := sc.element(args[0], defaultTimeout)
@@ -2353,6 +2383,7 @@ func cmdFocus(args []string) {
 		fatal("usage: rodney focus <selector>")
 	}
 	s, _, page := withPage()
+	sendInteractionMarker("focus", args)
 	if s.Stealth {
 		sc := getStealthCtx(page, s)
 		nodeID, err := sc.element(args[0], defaultTimeout)
