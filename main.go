@@ -1388,6 +1388,10 @@ func cmdEndSession(args []string) {
 	// 6. Remove from registry
 	registryRemove(regPath, lockPath, sid)
 
+	// Clean up network capture data for this session
+	netSessionDir := filepath.Join(dataDir, "net", sid)
+	os.RemoveAll(netSessionDir)
+
 	// 7. If no sessions remain, shut down browser
 	if wasLastSession && browser != nil {
 		pages, _ := browser.Pages()
@@ -1421,6 +1425,16 @@ func cmdEndSession(args []string) {
 				proc.Signal(syscall.SIGTERM)
 			}
 		}
+
+		// Kill network monitor
+		if s.MonitorPID > 0 {
+			if proc, err := os.FindProcess(s.MonitorPID); err == nil {
+				proc.Signal(syscall.SIGTERM)
+			}
+		}
+
+		// Clean up net directory
+		os.RemoveAll(filepath.Join(dataDir, "net"))
 
 		// Remove state files
 		os.Remove(sp)
