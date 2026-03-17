@@ -1,86 +1,85 @@
 rodney - Chrome automation from the command line
 
-Browser lifecycle:
-  rodney start [--headless] [--no-stealth] [--profile NAME] [--insecure | -k]  Launch Chrome (visible+stealth by default)
-  rodney connect <host:port>      Connect to existing Chrome on remote debug port
-  rodney stop                     Shut down Chrome
-  rodney status                   Show browser status
+Sessions:
+  rodney newsession [url] [flags]    Create session (launches browser if needed)
+  rodney endsession [id]             Close a session (shuts down browser if last)
+  rodney sessions [--all]            List sessions grouped by data dir
 
 Navigation:
-  rodney open <url>               Navigate to URL
-  rodney back                     Go back in history
-  rodney forward                  Go forward in history
-  rodney reload [--hard]          Reload page (--hard bypasses cache)
-  rodney clear-cache              Clear the browser cache
+  rodney open <url>                  Navigate to URL
+  rodney back                        Go back in history
+  rodney forward                     Go forward in history
+  rodney reload [--hard]             Reload page (--hard bypasses cache)
+  rodney clear-cache                 Clear the browser cache
 
 Page info:
-  rodney url                      Print current URL
-  rodney title                    Print page title
-  rodney html [selector]          Print HTML (page or element)
-  rodney text <selector>          Print text content of element
-  rodney attr <selector> <name>   Print attribute value
-  rodney pdf [file]               Save page as PDF
+  rodney url                         Print current URL
+  rodney title                       Print page title
+  rodney html [selector]             Print HTML (page or element)
+  rodney text <selector>             Print text content of element
+  rodney attr <selector> <name>      Print attribute value
+  rodney pdf [file]                  Save page as PDF
 
 Interaction:
-  rodney js <expression>          Evaluate JavaScript expression
-  rodney click <selector>         Click an element
-  rodney input <selector> <text>  Type text into an input field
-  rodney clear <selector>         Clear an input field
-  rodney file <selector> <path|-> Set file on a file input (- for stdin)
-  rodney download <sel> [file|-]  Download href/src target (- for stdout)
-  rodney select <selector> <val>  Select dropdown option by value
-  rodney submit <selector>        Submit a form
-  rodney hover <selector>         Hover over an element
-  rodney focus <selector>         Focus an element
+  rodney js <expression>             Evaluate JavaScript expression
+  rodney click <selector>            Click an element
+  rodney input <selector> <text>     Type text into an input field
+  rodney clear <selector>            Clear an input field
+  rodney file <selector> <path|->    Set file on a file input (- for stdin)
+  rodney download <sel> [file|-]     Download href/src target (- for stdout)
+  rodney select <selector> <val>     Select dropdown option by value
+  rodney submit <selector>           Submit a form
+  rodney hover <selector>            Hover over an element
+  rodney focus <selector>            Focus an element
 
 Waiting:
-  rodney wait <selector>          Wait for element to appear
-  rodney waitload                 Wait for page load
-  rodney waitstable               Wait for DOM to stabilize
-  rodney waitidle                 Wait for network idle
-  rodney sleep <seconds>          Sleep for N seconds
+  rodney wait <selector>             Wait for element to appear
+  rodney waitload                    Wait for page load
+  rodney waitstable                  Wait for DOM to stabilize
+  rodney waitidle                    Wait for network idle
+  rodney sleep <seconds>             Sleep for N seconds
 
 Screenshots:
   rodney screenshot [-w N] [-h N] [file]  Take page screenshot
-  rodney screenshot-el <sel> [f]  Screenshot an element
-
-Pages:
-  rodney pages                    List all pages (with session IDs)
-  rodney page <index>             Switch active page by index
-  rodney newpage [url]            Open a new page in its own window, returns session ID
-  rodney closepage [sid|index]    Close a page by session ID or index
-
-  Use --session <id> on any command to target a specific page:
-    rodney newpage 'https://example.com' --local        # prints: abc123 https://example.com
-    rodney text '.title' --session abc123 --local        # runs on that page
+  rodney screenshot-el <sel> [f]     Screenshot an element
 
 Element checks:
-  rodney exists <selector>        Check if element exists (exit 1 if not)
-  rodney count <selector>         Count matching elements
-  rodney visible <selector>       Check if element is visible (exit 1 if not)
-  rodney assert <expr> [expected] [-m msg]  Assert JS expression (truthy or equality)
+  rodney exists <selector>           Check if element exists (exit 1 if not)
+  rodney count <selector>            Count matching elements
+  rodney visible <selector>          Check if element is visible (exit 1 if not)
+  rodney assert <expr> [expected] [-m msg]  Assert JS expression
 
 Accessibility:
   rodney ax-tree [--depth N] [--json]       Dump accessibility tree
   rodney ax-find [--name N] [--role R] [--json]  Find accessible nodes
   rodney ax-node <selector> [--json]        Show accessibility info for element
 
-Options:
-  --local                         Use directory-scoped session (./.rodney/)
-  --global                        Use global session (~/.rodney/)
-  --home-dir <path|tmp>            Use specified directory (or "tmp" to auto-create)
-  --session <id>                  Target a specific page by session ID (from newpage)
-  --profile <name|email>          Chrome profile by directory, display name, or email
-  --version                       Print version and exit
-  --help, -h, help                Show this help message
+newsession flags:
+  Browser (only matter on first launch for a data dir):
+    --headless                       Launch Chrome in headless mode
+    --no-stealth                     Disable stealth mode (stealth on by default)
+    --profile <name|email>           Chrome profile
+    --insecure | -k                  Ignore SSL certificate errors
 
-Session options (--local, --global, --home-dir, --profile) only need to be
-passed to "rodney start". Subsequent commands auto-detect the session:
-if ./.rodney/state.json exists, the local session is used; otherwise global.
-Stealth mode is on by default; use --no-stealth to disable.
+  Per-session:
+    --viewport WxH                   Set viewport dimensions
 
-Environment:
-  RODNEY_HOME                     Override data directory (default: ~/.rodney)
+  Scope:
+    --local                          Use ./.rodney/ data dir
+    --global                         Use ~/.rodney/ data dir
+    --home-dir <path|tmp>            Use specified dir ("tmp" for auto-create)
+
+  Default: uses ./.rodney/ if it exists, otherwise creates /tmp/rodney-XXXXX
+
+Options (all commands):
+  --session <id>                     Target a specific session by ID
+  --version                          Print version and exit
+  --help, -h, help                   Show this help message
+
+Usage:
+  export RODNEY_SESSION=$(rodney newsession https://example.com --local)
+  rodney text 'h1'
+  rodney endsession
 
 Exit codes:
   0  Success
