@@ -46,6 +46,9 @@ const (
 // activeStateDir is set once at startup based on --local/--global/--home-dir flags.
 var activeStateDir string
 
+// activeScopeMode is set once in main() from extractScopeArgs result.
+var activeScopeMode scopeMode
+
 // homeDirFlag is set when --home-dir is explicitly passed on the command line.
 // Used by cmdStop to clean up the session directory.
 var homeDirFlag string
@@ -454,6 +457,7 @@ func main() {
 
 	// Extract --local/--global/--home-dir/--session from all args before dispatching
 	mode, homeDir, sessionID, cleanedArgs := extractScopeArgs(os.Args[1:])
+	activeScopeMode = mode
 	if sessionID == "" {
 		sessionID = os.Getenv("RODNEY_SESSION")
 	}
@@ -841,11 +845,14 @@ type startFlags struct {
 	stealth          bool
 	viewport         string
 	profile          string
+	url              string          // positional arg (URL for newsession)
+	explicitFlags    map[string]bool // tracks which flags were explicitly passed
 }
 
 // parseStartFlags parses the arguments to "rodney start".
 func parseStartFlags(args []string) (startFlags, error) {
 	f := startFlags{headless: false, stealth: true}
+	f.explicitFlags = make(map[string]bool)
 	usage := "usage: rodney start [--headless] [--no-stealth] [--viewport WxH] [--profile NAME] [--insecure | -k]"
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -853,12 +860,15 @@ func parseStartFlags(args []string) (startFlags, error) {
 			// accepted for backwards compat, already the default
 		case "--headless":
 			f.headless = true
+			f.explicitFlags["headless"] = true
 		case "--insecure", "-k":
 			f.ignoreCertErrors = true
+			f.explicitFlags["insecure"] = true
 		case "--stealth":
 			// accepted for backwards compat, already the default
 		case "--no-stealth":
 			f.stealth = false
+			f.explicitFlags["stealth"] = true
 		case "--viewport":
 			i++
 			if i >= len(args) {
@@ -881,11 +891,53 @@ func parseStartFlags(args []string) (startFlags, error) {
 				return f, fmt.Errorf("missing value for --profile\n%s", usage)
 			}
 			f.profile = args[i]
+			f.explicitFlags["profile"] = true
 		default:
-			return f, fmt.Errorf("unknown flag: %s\n%s", args[i], usage)
+			if strings.HasPrefix(args[i], "-") {
+				return f, fmt.Errorf("unknown flag: %s\n%s", args[i], usage)
+			}
+			// First non-flag positional arg is the URL
+			if f.url == "" {
+				f.url = args[i]
+			} else {
+				return f, fmt.Errorf("unexpected argument: %s\n%s", args[i], usage)
+			}
 		}
 	}
 	return f, nil
+}
+
+// checkBrowserCompat verifies that explicitly-passed flags are compatible with
+// the running browser. Returns nil if compatible, descriptive error if not.
+func checkBrowserCompat(s *State, flags *startFlags, currentProxyHash string) error {
+	if flags == nil {
+		return nil
+	}
+	if flags.explicitFlags["headless"] && flags.headless != s.Headless {
+		if s.Headless {
+			return fmt.Errorf("browser already running with --headless; pass --headless or omit the flag")
+		}
+		return fmt.Errorf("browser already running without --headless; omit the --headless flag or end existing sessions first")
+	}
+	if flags.explicitFlags["stealth"] && flags.stealth != s.Stealth {
+		if s.Stealth {
+			return fmt.Errorf("browser already running with stealth; omit --no-stealth or end existing sessions first")
+		}
+		return fmt.Errorf("browser already running with --no-stealth; pass --no-stealth or omit the flag")
+	}
+	if flags.explicitFlags["insecure"] && flags.ignoreCertErrors != s.Insecure {
+		if s.Insecure {
+			return fmt.Errorf("browser already running with --insecure; pass --insecure or omit the flag")
+		}
+		return fmt.Errorf("browser already running without --insecure; omit the --insecure flag or end existing sessions first")
+	}
+	if flags.explicitFlags["profile"] && flags.profile != s.Profile {
+		return fmt.Errorf("browser already running with profile %q; pass --profile %s or omit the flag", s.Profile, s.Profile)
+	}
+	if currentProxyHash != "" && s.ProxyConfigHash != "" && currentProxyHash != s.ProxyConfigHash {
+		return fmt.Errorf("browser already running with a different proxy configuration")
+	}
+	return nil
 }
 
 // resolveProfile resolves a --profile value to a Chrome profile directory name

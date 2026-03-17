@@ -1553,8 +1553,8 @@ func TestParseStartFlags_InsecureOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("--insecure should be accepted, got error: %v", err)
 	}
-	if !flags.headless {
-		t.Error("expected headless=true (default) when --show is not passed")
+	if flags.headless {
+		t.Error("expected headless=false (default, visible window)")
 	}
 	if !flags.ignoreCertErrors {
 		t.Error("expected ignoreCertErrors=true when --insecure is passed")
@@ -1576,8 +1576,8 @@ func TestParseStartFlags_NoArgs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("no args should be accepted, got error: %v", err)
 	}
-	if !flags.headless {
-		t.Error("expected headless=true by default")
+	if flags.headless {
+		t.Error("expected headless=false by default (visible window)")
 	}
 	if flags.ignoreCertErrors {
 		t.Error("expected ignoreCertErrors=false by default")
@@ -1592,8 +1592,8 @@ func TestParseStartFlags_Stealth(t *testing.T) {
 	if !flags.stealth {
 		t.Error("expected stealth=true")
 	}
-	if !flags.headless {
-		t.Error("expected headless=true (default)")
+	if flags.headless {
+		t.Error("expected headless=false (default, visible window)")
 	}
 }
 
@@ -1644,6 +1644,94 @@ func TestParseStartFlags_ViewportBadFormat(t *testing.T) {
 	_, err := parseStartFlags([]string{"--viewport", "invalid"})
 	if err == nil {
 		t.Fatal("expected error for bad viewport format, got nil")
+	}
+}
+
+func TestParseStartFlags_ExplicitHeadless(t *testing.T) {
+	f, err := parseStartFlags([]string{"--headless"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !f.explicitFlags["headless"] {
+		t.Fatal("headless should be explicitly set")
+	}
+	if f.explicitFlags["stealth"] {
+		t.Fatal("stealth should not be explicitly set (it's a default)")
+	}
+}
+
+func TestParseStartFlags_URLPositionalArg(t *testing.T) {
+	f, err := parseStartFlags([]string{"https://example.com", "--headless"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if f.url != "https://example.com" {
+		t.Fatalf("expected URL, got %q", f.url)
+	}
+	if !f.headless {
+		t.Fatal("headless should be true")
+	}
+}
+
+// ============================
+// checkBrowserCompat tests
+// ============================
+
+func TestCheckBrowserCompat_AllMatch(t *testing.T) {
+	s := &State{Headless: true, Stealth: true, Insecure: false, Profile: "Default"}
+	flags := &startFlags{
+		headless: true, stealth: true, ignoreCertErrors: false, profile: "Default",
+		explicitFlags: map[string]bool{"headless": true, "stealth": true, "insecure": true, "profile": true},
+	}
+	if err := checkBrowserCompat(s, flags, ""); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestCheckBrowserCompat_HeadlessMismatch(t *testing.T) {
+	s := &State{Headless: true, Stealth: true}
+	flags := &startFlags{
+		headless: false, stealth: true,
+		explicitFlags: map[string]bool{"headless": true},
+	}
+	err := checkBrowserCompat(s, flags, "")
+	if err == nil {
+		t.Fatal("expected error for headless mismatch")
+	}
+	if !strings.Contains(err.Error(), "headless") {
+		t.Fatalf("error should mention headless: %v", err)
+	}
+}
+
+func TestCheckBrowserCompat_OmittedFlagsNotConflict(t *testing.T) {
+	s := &State{Headless: true, Stealth: true, Insecure: true, Profile: "Work"}
+	if err := checkBrowserCompat(s, nil, ""); err != nil {
+		t.Fatalf("nil flags should not conflict: %v", err)
+	}
+}
+
+func TestCheckBrowserCompat_ProxyMismatch(t *testing.T) {
+	s := &State{ProxyConfigHash: "sha256:aaa"}
+	flags := &startFlags{explicitFlags: map[string]bool{}}
+	err := checkBrowserCompat(s, flags, "sha256:bbb")
+	if err == nil {
+		t.Fatal("expected error for proxy mismatch")
+	}
+}
+
+func TestCheckBrowserCompat_InsecureMismatch_BothDirections(t *testing.T) {
+	s := &State{Insecure: true}
+	flags := &startFlags{explicitFlags: map[string]bool{}}
+	if err := checkBrowserCompat(s, flags, ""); err != nil {
+		t.Fatalf("omitted flag should not conflict: %v", err)
+	}
+	flags2 := &startFlags{
+		ignoreCertErrors: false,
+		explicitFlags:    map[string]bool{"insecure": true},
+	}
+	err := checkBrowserCompat(s, flags2, "")
+	if err == nil {
+		t.Fatal("expected error for insecure mismatch")
 	}
 }
 
