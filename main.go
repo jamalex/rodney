@@ -1541,6 +1541,7 @@ func cmdSessions(args []string) {
 			// state.json missing: prune all sessions for this dir from registry
 			for _, sid := range sids {
 				registryRemove(regPath, lockPath, sid)
+				os.RemoveAll(filepath.Join(dataDir, "net", sid))
 			}
 			continue
 		}
@@ -1550,6 +1551,7 @@ func cmdSessions(args []string) {
 			// Corrupt state: prune
 			for _, sid := range sids {
 				registryRemove(regPath, lockPath, sid)
+				os.RemoveAll(filepath.Join(dataDir, "net", sid))
 			}
 			continue
 		}
@@ -1571,6 +1573,7 @@ func cmdSessions(args []string) {
 				si, ok := s.Sessions[sid]
 				if !ok {
 					registryRemove(regPath, lockPath, sid)
+					os.RemoveAll(filepath.Join(dataDir, "net", sid))
 					continue
 				}
 				_ = si
@@ -1613,6 +1616,7 @@ func cmdSessions(args []string) {
 			si, ok := s.Sessions[sid]
 			if !ok {
 				registryRemove(regPath, lockPath, sid)
+				os.RemoveAll(filepath.Join(dataDir, "net", sid))
 				continue
 			}
 			title := ""
