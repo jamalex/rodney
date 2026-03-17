@@ -920,6 +920,38 @@ func TestResolveNewSessionDir_HomeDirTmp(t *testing.T) {
 	os.RemoveAll(got)
 }
 
+func TestResolveSessionID_FlagTakesPrecedence(t *testing.T) {
+	t.Setenv("RODNEY_SESSION", "envid1")
+	got := resolveSessionID("flagid", "")
+	if got != "flagid" {
+		t.Fatalf("expected flagid, got %q", got)
+	}
+}
+
+func TestResolveSessionID_EnvVarFallback(t *testing.T) {
+	t.Setenv("RODNEY_SESSION", "envid1")
+	got := resolveSessionID("", "")
+	if got != "envid1" {
+		t.Fatalf("expected envid1, got %q", got)
+	}
+}
+
+func TestResolveSessionID_ErrorWhenMissing(t *testing.T) {
+	t.Setenv("RODNEY_SESSION", "")
+	got := resolveSessionID("", "")
+	if got != "" {
+		t.Fatalf("expected empty, got %q", got)
+	}
+}
+
+func TestResolveSessionID_PositionalArgFirst(t *testing.T) {
+	t.Setenv("RODNEY_SESSION", "envid1")
+	got := resolveSessionID("flagid", "posid")
+	if got != "posid" {
+		t.Fatalf("expected posid, got %q", got)
+	}
+}
+
 func TestSessionInfo_JSONRoundTrip(t *testing.T) {
 	info := SessionInfo{
 		TargetID:       "ABCDEF123",

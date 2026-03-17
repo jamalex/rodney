@@ -196,6 +196,21 @@ type State struct {
 // activeSessionID is set by --session <id> flag or RODNEY_SESSION env var.
 var activeSessionID string
 
+// resolveSessionID determines the session ID from available sources.
+// Priority: positionalArg > flagValue (--session) > RODNEY_SESSION env var.
+func resolveSessionID(flagValue, positionalArg string) string {
+	if positionalArg != "" {
+		return positionalArg
+	}
+	if flagValue != "" {
+		return flagValue
+	}
+	if env := os.Getenv("RODNEY_SESSION"); env != "" {
+		return env
+	}
+	return ""
+}
+
 func stateDir() string {
 	if activeStateDir != "" {
 		return activeStateDir
@@ -437,8 +452,11 @@ func main() {
 		os.Exit(2)
 	}
 
-	// Extract --local/--global/--home-dir/--page from all args before dispatching
+	// Extract --local/--global/--home-dir/--session from all args before dispatching
 	mode, homeDir, sessionID, cleanedArgs := extractScopeArgs(os.Args[1:])
+	if sessionID == "" {
+		sessionID = os.Getenv("RODNEY_SESSION")
+	}
 	activeSessionID = sessionID
 	if len(cleanedArgs) == 0 {
 		printUsage()
