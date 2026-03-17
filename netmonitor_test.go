@@ -346,3 +346,175 @@ func TestIPC_SendFailsGracefully(t *testing.T) {
 		t.Fatal("expected error for missing socket")
 	}
 }
+
+func TestParseNetLogFlags(t *testing.T) {
+	flags := parseNetLogFlags([]string{"--since", "nav", "--method", "GET,POST", "--path", "/api", "--domain", "*.example.com", "--headers", "--timestamps", "--tail", "10"})
+	if flags.since != "nav" {
+		t.Fatalf("since: %q", flags.since)
+	}
+	if flags.method != "GET,POST" {
+		t.Fatalf("method: %q", flags.method)
+	}
+	if flags.pathPrefix != "/api" {
+		t.Fatalf("path: %q", flags.pathPrefix)
+	}
+	if flags.domain != "*.example.com" {
+		t.Fatalf("domain: %q", flags.domain)
+	}
+	if !flags.headers || !flags.timestamps {
+		t.Fatal("headers/timestamps should be true")
+	}
+	if flags.tail != 10 {
+		t.Fatalf("tail: %d", flags.tail)
+	}
+}
+
+func TestFilterNetEvents_ByMethod(t *testing.T) {
+	events := []NetEvent{
+		{Seq: 1, Type: "request", Method: "GET", URL: "https://example.com/a"},
+		{Seq: 2, Type: "response", ID: "R1", Status: 200},
+		{Seq: 3, Type: "request", Method: "POST", URL: "https://example.com/b"},
+		{Seq: 4, Type: "page-loaded"},
+	}
+	flags := netLogFlags{method: "GET"}
+	filtered := filterNetEvents(events, flags)
+	if len(filtered) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(filtered))
+	}
+	if filtered[0].Seq != 1 {
+		t.Fatalf("wrong event: seq=%d", filtered[0].Seq)
+	}
+}
+
+func TestFilterNetEvents_ByPath(t *testing.T) {
+	events := []NetEvent{
+		{Seq: 1, Type: "request", URL: "https://example.com/api/users"},
+		{Seq: 2, Type: "request", URL: "https://example.com/static/logo.png"},
+	}
+	flags := netLogFlags{pathPrefix: "/api"}
+	filtered := filterNetEvents(events, flags)
+	if len(filtered) != 1 || filtered[0].Seq != 1 {
+		t.Fatalf("unexpected result: %+v", filtered)
+	}
+}
+
+func TestFilterNetEvents_ByDomain(t *testing.T) {
+	events := []NetEvent{
+		{Seq: 1, Type: "request", URL: "https://api.example.com/data"},
+		{Seq: 2, Type: "request", URL: "https://cdn.other.com/file.js"},
+		{Seq: 3, Type: "request", URL: "https://sub.example.com/test"},
+	}
+	flags := netLogFlags{domain: "*.example.com"}
+	filtered := filterNetEvents(events, flags)
+	if len(filtered) != 2 {
+		t.Fatalf("expected 2, got %d", len(filtered))
+	}
+}
+
+func TestFilterNetEvents_SinceNav(t *testing.T) {
+	events := []NetEvent{
+		{Seq: 1, Type: "request", URL: "https://old.com"},
+		{Seq: 2, Type: "page-navigated", URL: "https://new.com"},
+		{Seq: 3, Type: "request", URL: "https://new.com/api"},
+	}
+	flags := netLogFlags{since: "nav"}
+	filtered := filterNetEvents(events, flags)
+	if len(filtered) != 2 {
+		t.Fatalf("expected 2 (nav event + request after), got %d", len(filtered))
+	}
+	if filtered[0].Seq != 2 {
+		t.Fatalf("first should be nav event, got seq=%d", filtered[0].Seq)
+	}
+}
+
+func TestFilterNetEvents_SinceNavNotFound(t *testing.T) {
+	events := []NetEvent{
+		{Seq: 1, Type: "request", URL: "https://example.com"},
+	}
+	flags := netLogFlags{since: "nav"}
+	filtered := filterNetEvents(events, flags)
+	if len(filtered) != 1 {
+		t.Fatalf("expected all events when anchor not found, got %d", len(filtered))
+	}
+}
+
+func TestFilterNetEvents_ByID(t *testing.T) {
+	events := []NetEvent{
+		{Seq: 1, Type: "request", ID: "R1", URL: "https://example.com/a"},
+		{Seq: 2, Type: "request", ID: "R2", URL: "https://example.com/b"},
+		{Seq: 3, Type: "response", ID: "R1", Status: 200},
+		{Seq: 4, Type: "response", ID: "R2", Status: 404},
+	}
+	flags := netLogFlags{id: "R1"}
+	filtered := filterNetEvents(events, flags)
+	if len(filtered) != 2 {
+		t.Fatalf("expected 2, got %d", len(filtered))
+	}
+}
+
+func TestFilterNetEvents_ByType(t *testing.T) {
+	events := []NetEvent{
+		{Seq: 1, Type: "request"},
+		{Seq: 2, Type: "response"},
+		{Seq: 3, Type: "user-click"},
+		{Seq: 4, Type: "page-loaded"},
+	}
+	flags := netLogFlags{eventType: "request,response"}
+	filtered := filterNetEvents(events, flags)
+	if len(filtered) != 2 {
+		t.Fatalf("expected 2, got %d", len(filtered))
+	}
+}
+
+func TestFilterNetEvents_SinceTimestamp(t *testing.T) {
+	events := []NetEvent{
+		{Seq: 1, Type: "request", TS: "2026-03-16T14:00:00Z"},
+		{Seq: 2, Type: "request", TS: "2026-03-16T14:30:00Z"},
+		{Seq: 3, Type: "request", TS: "2026-03-16T15:00:00Z"},
+	}
+	flags := netLogFlags{since: "2026-03-16T14:30"}
+	filtered := filterNetEvents(events, flags)
+	if len(filtered) != 2 {
+		t.Fatalf("expected 2 events from timestamp onward, got %d", len(filtered))
+	}
+	if filtered[0].Seq != 2 {
+		t.Fatalf("first should be seq=2, got seq=%d", filtered[0].Seq)
+	}
+}
+
+func TestStripNetEvent_DefaultOmitsHeadersAndTS(t *testing.T) {
+	e := NetEvent{
+		Seq:     1,
+		TS:      "2026-03-16T14:30:01Z",
+		Type:    "request",
+		Headers: map[string]string{"accept": "text/html"},
+		Method:  "GET",
+		URL:     "https://example.com",
+	}
+	stripped := stripNetEvent(e, false, false)
+	if stripped.TS != "" {
+		t.Fatal("TS should be stripped by default")
+	}
+	if stripped.Headers != nil {
+		t.Fatal("Headers should be stripped by default")
+	}
+	if stripped.Method != "GET" {
+		t.Fatal("Method should be preserved")
+	}
+}
+
+func TestStripNetEvent_IncludeHeadersAndTS(t *testing.T) {
+	e := NetEvent{
+		Seq:     1,
+		TS:      "2026-03-16T14:30:01Z",
+		Type:    "request",
+		Headers: map[string]string{"accept": "text/html"},
+	}
+	stripped := stripNetEvent(e, true, true)
+	if stripped.TS == "" {
+		t.Fatal("TS should be preserved with --timestamps")
+	}
+	if stripped.Headers == nil {
+		t.Fatal("Headers should be preserved with --headers")
+	}
+}
