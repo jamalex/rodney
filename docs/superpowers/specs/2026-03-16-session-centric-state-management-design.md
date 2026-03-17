@@ -56,18 +56,18 @@ Creates a new browser session. Launches Chrome if needed, or reuses the running 
    - state.json exists, PID alive: validate browser-level flag compatibility. Error on conflict. Proceed if compatible or no browser-level flags passed.
    - state.json exists, PID dead: clean up stale state.json, launch fresh.
 3. Create page:
-   - First session (session_ids empty): claim the initial blank tab Chrome opened.
+   - First session (sessions empty): claim the initial blank tab Chrome opened.
    - Subsequent sessions: create new window via `TargetCreateTarget{NewWindow: true}`.
    - Navigate to URL if provided. Apply stealth scripts if stealth mode.
 4. Generate 6-char session ID. Verify uniqueness against global registry (regenerate on collision).
-5. Persist (under data-dir lock): add to state.json's session_ids. Then (under global registry lock) add to sessions.json.
+5. Persist (under data-dir lock): add to state.json's sessions. Then (under global registry lock) add to sessions.json.
 6. Print session ID to stdout.
 
 #### `rodney endsession [id]`
 
 Closes a session (a single browser page/tab).
 
-**Session ID resolution order for endsession:**
+**Session ID resolution order for endsession** (differs from the general lookup order because endsession takes the ID as a natural positional argument):
 1. Positional argument (`rodney endsession abc123`)
 2. `--session <id>` flag
 3. `RODNEY_SESSION` env var
@@ -77,7 +77,7 @@ Closes a session (a single browser page/tab).
 
 1. Resolve session: look up in global registry to get data dir. Load state.json (under data-dir lock), get TargetID.
 2. Close the page via CDP `TargetCloseTarget`. If the target is already gone (user manually closed the tab), skip this step and proceed with cleanup.
-3. Remove session from state.json's session_ids. Save.
+3. Remove session from state.json's sessions. Save.
 4. Remove session from global registry (under file lock).
 5. If no sessions remain:
    - Check `browser.Pages()`. If empty or only `chrome://` internal pages, call `browser.Close()`.
@@ -185,10 +185,10 @@ Mutations to state.json are guarded by `<data-dir>/state.lock` (flock), using at
 
 Changes from current state.json:
 - `active_page` removed (no index-based tracking).
-- `session_ids` (flat map of ID to TargetID) replaced by `sessions` (map of ID to per-session struct with target_id and viewport dimensions).
+- `sessions` (flat map of ID to TargetID) replaced by `sessions` (map of ID to per-session struct with target_id and viewport dimensions).
 - `viewport_width`/`viewport_height` moved from top-level to per-session, since each session can have its own viewport.
 - `headless`, `insecure`, `profile` added (for compatibility checking).
-- `proxy_server` (human-readable, no credentials) and `proxy_config_hash` (SHA-256 of full proxy URL including credentials) added.
+- `proxy_server` (human-readable, no credentials; informational only, for diagnostic display in `sessions` output) and `proxy_config_hash` (SHA-256 of full proxy URL including credentials; used for compatibility checking) added.
 
 ### Browser-Level Compatibility Check
 
