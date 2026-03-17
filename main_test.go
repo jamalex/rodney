@@ -1955,7 +1955,7 @@ func TestStealth_RebrowserBotDetector(t *testing.T) {
 	defer page.MustClose()
 
 	// Apply full stealth setup: scripts + viewport + userAgentData brands
-	applyStealthToPage(page, browser, true, 1920, 1080)
+	applyStealthToPage(page, browser,1920, 1080)
 
 	page.MustExpose("exposedFn", func(g gson.JSON) (interface{}, error) {
 		return nil, nil
@@ -2556,7 +2556,7 @@ func TestStealth_UserAgentDataBrands(t *testing.T) {
 	defer page.MustClose()
 
 	// Apply full stealth setup including userAgentData brands
-	applyStealthToPage(page, browser, true, 1920, 935)
+	applyStealthToPage(page, browser,1920, 935)
 
 	page.MustNavigate(env.server.URL + "/stealth-check")
 	page.MustWaitLoad()
@@ -4785,7 +4785,7 @@ func TestStealthCtx_Live_WikipediaSearch(t *testing.T) {
 	defer page.MustClose()
 	injectStealthScripts(t, page)
 
-	applyStealthToPage(page, browser, true, 1920, 1080)
+	applyStealthToPage(page, browser,1920, 1080)
 
 	page.MustNavigate("https://en.wikipedia.org/wiki/Main_Page")
 	page.MustWaitLoad()
@@ -4837,7 +4837,7 @@ func TestStealthCtx_Live_HackerNewsHeadlines(t *testing.T) {
 	defer page.MustClose()
 	injectStealthScripts(t, page)
 
-	applyStealthToPage(page, browser, true, 1920, 1080)
+	applyStealthToPage(page, browser,1920, 1080)
 
 	page.MustNavigate("https://news.ycombinator.com/")
 	page.MustWaitLoad()
@@ -4866,7 +4866,7 @@ func TestStealthCtx_Live_GitHubRepoPage(t *testing.T) {
 	defer page.MustClose()
 	injectStealthScripts(t, page)
 
-	applyStealthToPage(page, browser, true, 1920, 1080)
+	applyStealthToPage(page, browser,1920, 1080)
 
 	page.MustNavigate("https://github.com/go-rod/rod")
 	page.MustWaitLoad()
@@ -4897,7 +4897,7 @@ func TestStealthCtx_Live_StackOverflow(t *testing.T) {
 	defer page.MustClose()
 	injectStealthScripts(t, page)
 
-	applyStealthToPage(page, browser, true, 1920, 1080)
+	applyStealthToPage(page, browser,1920, 1080)
 
 	page.MustNavigate("https://stackoverflow.com/questions/tagged/go")
 	page.MustWaitLoad()
@@ -4927,7 +4927,7 @@ func TestStealthCtx_Live_HTTPBin(t *testing.T) {
 	defer page.MustClose()
 	injectStealthScripts(t, page)
 
-	applyStealthToPage(page, browser, true, 1920, 1080)
+	applyStealthToPage(page, browser,1920, 1080)
 
 	page.MustNavigate("https://httpbin.org/get")
 	page.MustWaitLoad()

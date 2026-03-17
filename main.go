@@ -725,7 +725,7 @@ func userAgentDataScript(majorVer, fullVer, platform, arch string) string {
 // applyStealthToPage injects stealth scripts, sets viewport, and configures
 // user agent metadata for a page. Called for both initial and new pages.
 // vpWidth/vpHeight of 0 means no viewport override (used in visible/non-headless mode).
-func applyStealthToPage(page *rod.Page, browser *rod.Browser, stealthEnabled bool, vpWidth, vpHeight int) {
+func applyStealthToPage(page *rod.Page, browser *rod.Browser, vpWidth, vpHeight int) {
 	// 1. Inject stealth scripts via CDP before any navigation occurs.
 	// addScriptToEvaluateOnNewDocument persists across navigations.
 	proto.PageAddScriptToEvaluateOnNewDocument{Source: stealth.JS}.Call(page)
@@ -1218,7 +1218,7 @@ func cmdNewSession(args []string) {
 		if s.Stealth {
 			pages, _ := browser.Pages()
 			for _, p := range pages {
-				applyStealthToPage(p, browser, true, result.vpWidth, result.vpHeight)
+				applyStealthToPage(p, browser,result.vpWidth, result.vpHeight)
 			}
 		}
 
@@ -1246,7 +1246,7 @@ func cmdNewSession(args []string) {
 		}
 		page = browser.MustPageFromTargetID(t.TargetID)
 		if s.Stealth {
-			applyStealthToPage(page, browser, true, 0, 0)
+			applyStealthToPage(page, browser,0, 0)
 		}
 	}
 
@@ -1627,7 +1627,7 @@ func cmdOpen(args []string) {
 		if si, ok := s.Sessions[activeSessionID]; ok {
 			vpW, vpH = si.ViewportWidth, si.ViewportHeight
 		}
-		applyStealthToPage(page, browser, true, vpW, vpH)
+		applyStealthToPage(page, browser,vpW, vpH)
 	}
 	if err := page.Navigate(url); err != nil {
 		fatal("navigation failed: %v", err)
