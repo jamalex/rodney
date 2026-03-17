@@ -1131,7 +1131,7 @@ func launchChrome(flags *startFlags, dataDir string) launchResult {
 
 		l.Set("proxy-server", fmt.Sprintf("http://127.0.0.1:%d", proxyPort))
 		ignoreCertErrors = true
-		fmt.Printf("Auth proxy started (PID %d, port %d) -> %s\n", proxyPID, proxyPort, server)
+		fmt.Fprintf(os.Stderr, "Auth proxy started (PID %d, port %d) -> %s\n", proxyPID, proxyPort, server)
 	}
 
 	if ignoreCertErrors {
