@@ -1638,6 +1638,29 @@ func TestParseStartFlags_StealthDefaultViewport(t *testing.T) {
 	}
 }
 
+func TestParseStartFlags_NoCapture(t *testing.T) {
+	f, err := parseStartFlags([]string{"--no-capture", "https://example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !f.noCapture {
+		t.Fatal("expected noCapture=true")
+	}
+	if f.url != "https://example.com" {
+		t.Fatalf("expected URL, got %q", f.url)
+	}
+}
+
+func TestParseStartFlags_NoCaptureDefault(t *testing.T) {
+	f, err := parseStartFlags([]string{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.noCapture {
+		t.Fatal("noCapture should default to false")
+	}
+}
+
 func TestParseStartFlags_ViewportBadFormat(t *testing.T) {
 	_, err := parseStartFlags([]string{"--viewport", "invalid"})
 	if err == nil {

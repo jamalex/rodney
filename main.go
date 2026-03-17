@@ -831,6 +831,7 @@ type startFlags struct {
 	viewport         string
 	profile          string
 	url              string          // positional arg (URL for newsession)
+	noCapture        bool
 	explicitFlags    map[string]bool // tracks which flags were explicitly passed
 }
 
@@ -854,6 +855,8 @@ func parseStartFlags(args []string) (startFlags, error) {
 		case "--no-stealth":
 			f.stealth = false
 			f.explicitFlags["stealth"] = true
+		case "--no-capture":
+			f.noCapture = true
 		case "--viewport":
 			i++
 			if i >= len(args) {
