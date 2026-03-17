@@ -54,6 +54,11 @@ Accessibility:
   rodney ax-find [--name N] [--role R] [--json]  Find accessible nodes
   rodney ax-node <selector> [--json]        Show accessibility info for element
 
+Network:
+  rodney net-log [flags]                  Show network event log
+  rodney net-body <seq>                   Print request/response body by seq number
+  rodney net-clear                        Clear captured network data
+
 newsession flags:
   Browser (only matter on first launch for a data dir):
     --headless                       Launch Chrome in headless mode
@@ -63,6 +68,7 @@ newsession flags:
 
   Per-session:
     --viewport WxH                   Set viewport dimensions
+    --no-capture                     Disable network monitoring for this session
 
   Scope:
     --local                          Use ./.rodney/ data dir
@@ -70,6 +76,18 @@ newsession flags:
     --home-dir <path|tmp>            Use specified dir ("tmp" for auto-create)
 
   Default: uses ./.rodney/ if it exists, otherwise creates /tmp/rodney-XXXXX
+
+net-log flags:
+  --since nav|render|interaction|<ts>  Filter events since a point in time
+  --id <request-id>                    Filter to a specific request stream
+  --method <method>                    Filter by HTTP method (comma-separated)
+  --path <prefix>                      Filter by URL path prefix
+  --domain <domain>                    Filter by domain (supports *.example.com)
+  --type <event-type>                  Filter by event type (comma-separated)
+  --headers                            Include headers in output
+  --timestamps                         Include timestamps in output
+  --tail <n>                           Show last N matching entries
+  --follow                             Live tail
 
 Options (all commands):
   --session <id>                     Target a specific session by ID
